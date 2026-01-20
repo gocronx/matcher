@@ -1,0 +1,96 @@
+# Matcher Configuration File
+# High-Performance Trading Order Matching Engine
+
+[engine]
+# List of product IDs to support
+product_ids = ["BTC-USD", "ETH-USD"]
+
+# Maximum number of orders per product
+max_orders_per_product = 1000000
+
+# Maximum order book depth to maintain in memory
+max_book_depth = 10000
+
+# Enable risk management checks
+enable_risk_management = true
+
+# Order ID generation strategy: "UuidV4", "Sequential", or "Timestamp"
+order_id_strategy = "UuidV4"
+
+[network]
+# Port to listen on for incoming connections
+listen_port = 8080
+
+# Multicast address for receiving orders
+multicast_addr = "239.0.0.1:5000"
+
+# Broadcast address for sending match results
+broadcast_addr = "239.0.0.2:5001"
+
+# Network buffer size in bytes
+buffer_size = 65536
+
+# Enable TCP keepalive
+tcp_keepalive = true
+
+# Socket timeout in milliseconds
+socket_timeout_ms = 5000
+
+[performance]
+# Number of worker threads (0 = auto-detect)
+worker_threads = 4
+
+# Batch size for processing orders
+batch_size = 100
+
+# CPU frequency in GHz for high-resolution timing
+cpu_freq_ghz = 3.0
+
+# Enable NUMA awareness
+numa_aware = false
+
+# Memory pool size in bytes
+memory_pool_size = 104857600  # 100MB
+
+# Enable lock-free algorithms where possible
+lock_free = true
+
+[monitoring]
+# Enable Prometheus metrics
+enable_metrics = true
+
+# Metrics HTTP server port
+metrics_port = 9090
+
+# Log level: "trace", "debug", "info", "warn", "error"
+log_level = "info"
+
+# Enable structured logging (JSON format)
+structured_logging = true
+
+# Health check endpoint port
+health_check_port = 8081
+
+# Product-specific configurations
+[products.BTC-USD]
+# Minimum price increment (tick size) in smallest unit
+tick_size = 100  # $0.01
+
+# Minimum quantity increment
+lot_size = 1
+
+# Maximum order size
+max_order_size = 1000000000  # 10 BTC in satoshis
+
+# Price precision (decimal places)
+price_precision = 2
+
+# Quantity precision (decimal places)
+quantity_precision = 8
+
+[products.ETH-USD]
+tick_size = 100  # $0.01
+lot_size = 1
+max_order_size = 100000000000  # 1000 ETH in wei (simplified)
+price_precision = 2
+quantity_precision = 8
