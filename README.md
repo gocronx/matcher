@@ -388,10 +388,6 @@ cargo fmt
 cargo clippy
 ```
 
-### Contributing
-
-Contributions are welcome! Please check [CONTRIBUTING.md](CONTRIBUTING.md) for details.
-
 ## FAQ
 
 ### Q: How to improve performance?

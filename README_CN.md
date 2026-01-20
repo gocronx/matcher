@@ -388,10 +388,6 @@ cargo fmt
 cargo clippy
 ```
 
-### 贡献
-
-欢迎贡献！请查看 [CONTRIBUTING.md](CONTRIBUTING.md) 了解详情。
-
 ## 常见问题
 
 ### Q: 如何提高性能？
