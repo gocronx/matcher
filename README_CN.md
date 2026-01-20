@@ -27,7 +27,7 @@
 ### 安装
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/gocronx/matcher.git
 cd matcher
 cargo build --release
 ```
