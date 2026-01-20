@@ -9,7 +9,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
     let _ = tracing_subscriber::fmt::try_init();
     
-    info!("🚀 Starting Matcher Example");
+    info!("Starting Matcher Example");
     
     // Create configuration
     let config = Config::default();
@@ -75,7 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Market order generated {} matches:", matches.len());
     
     for (i, match_result) in matches.iter().enumerate() {
-        info!("  Match {}: {} units at ${:.2} (latency: {}ns)", 
+        info!("Match {}: {} units at ${:.2} (latency: {}ns)", 
               i + 1,
               match_result.quantity,
               match_result.price as f64 / 100.0,
@@ -91,11 +91,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Show engine statistics
     let stats = matching_engine.get_stats();
     info!("Engine statistics:");
-    info!("  Orders received: {}", stats.orders_received);
-    info!("  Orders matched: {}", stats.orders_matched);
-    info!("  Trades executed: {}", stats.trades_executed);
-    info!("  Average match latency: {}ns", stats.avg_match_latency_ns);
-    info!("  Uptime: {}s", stats.uptime_seconds);
+    info!("Orders received: {}", stats.orders_received);
+    info!("Orders matched: {}", stats.orders_matched);
+    info!("Trades executed: {}", stats.trades_executed);
+    info!("Average match latency: {}ns", stats.avg_match_latency_ns);
+    info!("Uptime: {}s", stats.uptime_seconds);
     
     // Keep running for a bit to show metrics
     info!("Example completed. Engine will continue running for 10 seconds...");
