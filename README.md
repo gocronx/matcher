@@ -286,18 +286,32 @@ cargo bench --bench matching_benchmark
 ## Testing
 
 ```bash
-# Run all tests
-cargo test --release
+# Run all tests (unit tests, property tests, integration tests)
+cargo test
 
-# Run unit tests
-cargo test --lib
+# Run tests with output
+cargo test -- --nocapture
 
-# Run integration tests
-cargo test --test integration
+# Run specific test categories
+cargo test --test property_tests           # Property-based tests
+cargo test --test wal_property_tests       # WAL persistence tests
+cargo test --test config_property_tests    # Configuration tests
+cargo test --test matching_engine_integration_tests  # Integration tests
 
-# View test coverage
-cargo tarpaulin --out Html
+# Run performance benchmarks
+cargo bench
+
+# Code quality checks
+cargo clippy
+cargo fmt --check
 ```
+
+### Test Categories
+
+- **Unit Tests**: Basic functionality tests in each module
+- **Property Tests**: QuickCheck-based tests that verify system properties across thousands of random inputs
+- **Integration Tests**: End-to-end testing of complete workflows
+- **Benchmarks**: Performance measurement and regression testing
 
 ## Project Structure
 

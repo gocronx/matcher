@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
-use matcher::{Config, Engine, Order, OrderType, Side};
+use matcher::{Config, Engine, Order, Side};
 use matcher::utils::current_timestamp_ns;
 use tokio::runtime::Runtime;
 
@@ -42,30 +42,34 @@ fn bench_order_matching(c: &mut Criterion) {
     
     // Benchmark limit order submission (no match)
     group.bench_function("limit_order_no_match", |b| {
-        b.to_async(&rt).iter(|| async {
-            let order = Order::limit(
-                "BTC-USD".to_string(),
-                Side::Buy,
-                black_box(40000), // Price that won't match
-                black_box(100),
-                current_timestamp_ns(),
-            );
-            
-            let _ = matching_engine.submit_order(order).await;
+        b.iter(|| {
+            rt.block_on(async {
+                let order = Order::limit(
+                    "BTC-USD".to_string(),
+                    Side::Buy,
+                    black_box(40000), // Price that won't match
+                    black_box(100),
+                    current_timestamp_ns(),
+                );
+                
+                let _ = matching_engine.submit_order(order).await;
+            })
         });
     });
     
     // Benchmark market order (will match)
     group.bench_function("market_order_match", |b| {
-        b.to_async(&rt).iter(|| async {
-            let order = Order::market(
-                "BTC-USD".to_string(),
-                Side::Buy,
-                black_box(50),
-                current_timestamp_ns(),
-            );
-            
-            let _ = matching_engine.submit_order(order).await;
+        b.iter(|| {
+            rt.block_on(async {
+                let order = Order::market(
+                    "BTC-USD".to_string(),
+                    Side::Buy,
+                    black_box(50),
+                    current_timestamp_ns(),
+                );
+                
+                let _ = matching_engine.submit_order(order).await;
+            })
         });
     });
     
@@ -75,15 +79,17 @@ fn bench_order_matching(c: &mut Criterion) {
             BenchmarkId::new("market_order_by_size", size),
             size,
             |b, &size| {
-                b.to_async(&rt).iter(|| async {
-                    let order = Order::market(
-                        "BTC-USD".to_string(),
-                        Side::Buy,
-                        black_box(size),
-                        current_timestamp_ns(),
-                    );
-                    
-                    let _ = matching_engine.submit_order(order).await;
+                b.iter(|| {
+                    rt.block_on(async {
+                        let order = Order::market(
+                            "BTC-USD".to_string(),
+                            Side::Buy,
+                            black_box(size),
+                            current_timestamp_ns(),
+                        );
+                        
+                        let _ = matching_engine.submit_order(order).await;
+                    })
                 });
             },
         );
@@ -107,21 +113,21 @@ fn bench_order_book_operations(c: &mut Criterion) {
     // Benchmark order book snapshot
     group.bench_function("order_book_snapshot", |b| {
         b.iter(|| {
-            let _ = matching_engine.get_order_book_snapshot("BTC-USD", black_box(10));
+            let _ = matching_engine.get_order_book_snapshot(&"BTC-USD".to_string(), black_box(10));
         });
     });
     
     // Benchmark best price retrieval
     group.bench_function("best_prices", |b| {
         b.iter(|| {
-            let _ = matching_engine.get_best_prices("BTC-USD");
+            let _ = matching_engine.get_best_prices(&"BTC-USD".to_string());
         });
     });
     
     // Benchmark spread calculation
     group.bench_function("spread_calculation", |b| {
         b.iter(|| {
-            let _ = matching_engine.get_spread("BTC-USD");
+            let _ = matching_engine.get_spread(&"BTC-USD".to_string());
         });
     });
     
