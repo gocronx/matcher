@@ -4,7 +4,13 @@ Order-matching engine in Rust — a `BTreeMap`-backed price-time book, no locks,
 no I/O. The crate also ships a reference UDP-multicast daemon that wires the
 book up to the network, but that's optional.
 
-**Status: experimental.** API and wire format may change between commits.
+> **Status: experimental.** API and wire format may change between commits.
+
+Supported order types: **Market**, **Limit**, **IOC**, **FOK**, **Post-Only**,
+**Iceberg**. Time-in-force is GTC only. The book is single-threaded — wrap it
+in your own actor / channel / lock if you need concurrency.
+
+---
 
 ## Library usage
 
@@ -25,21 +31,17 @@ assert_eq!(trades[0].price, 100);
 assert_eq!(trades[0].quantity, 3);
 ```
 
-Supported order types: Market, Limit, IOC, FOK, Post-Only, Iceberg.
-Time-in-force is GTC only. The book is single-threaded — wrap it in your own
-actor / channel / lock if you need concurrency.
-
-Cargo:
-
 ```toml
 [dependencies]
 matcher = { git = "https://github.com/gocronx/matcher" }
 ```
 
-Deps: `tokio`, `socket2`, `ahash`, `smallvec`. (Pull in `matcher::book` only
-and `tokio` / `socket2` are unused at runtime.)
+Pull in `matcher::book` only and `tokio` / `socket2` are unused at runtime.
+Other deps: `ahash`, `smallvec`.
 
-## Why these choices
+---
+
+## Design
 
 - **Single book, no internal sharding.** If you want N products, run N books
   (or N processes) — no router, no cross-product locks, one crash = one
@@ -57,15 +59,9 @@ A binary at `src/bin/matcher.rs` wires the book up to two UDP multicast
 groups: orders in, trades out. Three async actors connected by mpsc channels;
 the book is owned by the matcher actor exclusively, no locks anywhere.
 
-```mermaid
-flowchart LR
-    udp_in([UDP in])
-    recv["net::receive"]
-    eng["matcher::run<br/>owns OrderBook"]
-    bcast["net::broadcast"]
-    udp_out([UDP out])
-    udp_in --> recv -- Inbound --> eng -- Trade --> bcast --> udp_out
-```
+<p align="center">
+  <img src="images/matcher.png" alt="matcher architecture" width="720">
+</p>
 
 ### Build & run
 
@@ -81,34 +77,42 @@ loopback-only testing (e.g. when a VPN is grabbing the multicast route).
 
 64-byte big-endian packets. Byte 0 is the message type.
 
-**submit (1)**
+#### submit · type `1`
 
-| offset    | field                                                          |
-| --------- | -------------------------------------------------------------- |
-| `[1]`     | side (1=buy, 2=sell)                                           |
-| `[2]`     | kind (1=market, 2=limit, 3=ioc, 4=fok, 5=post-only, 6=iceberg) |
-| `[8..16]` | order_id                                                       |
-| `[16..24]`| price                                                          |
-| `[24..32]`| total_quantity                                                 |
-| `[32..40]`| iceberg_visible (0 unless iceberg)                             |
+| offset     | field                                                          |
+| ---------- | -------------------------------------------------------------- |
+| `[1]`      | side (1=buy, 2=sell)                                           |
+| `[2]`      | kind (1=market, 2=limit, 3=ioc, 4=fok, 5=post-only, 6=iceberg) |
+| `[8..16]`  | order_id                                                       |
+| `[16..24]` | price                                                          |
+| `[24..32]` | total_quantity                                                 |
+| `[32..40]` | iceberg_visible (0 unless iceberg)                             |
 
-**cancel (2)** — `[8..16]` order_id
+#### cancel · type `2`
 
-**trade (3)**
+| offset    | field    |
+| --------- | -------- |
+| `[8..16]` | order_id |
 
-| offset    | field                          |
-| --------- | ------------------------------ |
-| `[1]`     | aggressor side                 |
-| `[8..16]` | buy_id                         |
-| `[16..24]`| sell_id                        |
-| `[24..32]`| price                          |
-| `[32..40]`| quantity                       |
-| `[40..48]`| timestamp ns                   |
+#### trade · type `3`
+
+| offset     | field          |
+| ---------- | -------------- |
+| `[1]`      | aggressor side |
+| `[8..16]`  | buy_id         |
+| `[16..24]` | sell_id        |
+| `[24..32]` | price          |
+| `[32..40]` | quantity       |
+| `[40..48]` | timestamp ns   |
+
+`src/codec.rs` is the authoritative spec; `tests/smoke.rs` shows the same
+path in Rust.
 
 ### Sending an order from Python
 
 ```python
 import socket, struct
+
 buf = bytearray(64)
 buf[0] = 1                                # submit
 buf[1] = 1                                # side: buy
@@ -123,10 +127,9 @@ s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF,
 s.sendto(bytes(buf), ("239.0.0.1", 5000))
 ```
 
-`src/codec.rs` is the authoritative spec; `tests/smoke.rs` shows the same
-path in Rust.
+---
 
-## Test
+## Testing
 
 ```sh
 cargo test
