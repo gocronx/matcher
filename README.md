@@ -59,9 +59,7 @@ A binary at `src/bin/matcher.rs` wires the book up to two UDP multicast
 groups: orders in, trades out. Three async actors connected by mpsc channels;
 the book is owned by the matcher actor exclusively, no locks anywhere.
 
-<p align="center">
-  <img src="images/matcher.png" alt="matcher architecture" width="720">
-</p>
+![matcher architecture](images/matcher.jpg)
 
 ### Build & run
 
