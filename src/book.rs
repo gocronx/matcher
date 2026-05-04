@@ -67,6 +67,92 @@ impl OrderBook {
         self.orders.is_empty()
     }
 
+    #[cfg(test)]
+    fn assert_invariants(&self) {
+        self.assert_invariants_at("book", 0, 0);
+    }
+
+    #[cfg(test)]
+    fn assert_invariants_at(&self, scenario: &str, seed: u64, step: usize) {
+        let mut seen = std::collections::HashSet::new();
+        let mut expected_bid = None;
+        let mut expected_ask = None;
+        let context = || format!("{scenario} seed={seed} step={step}");
+
+        for (&price, level) in &self.bids {
+            assert!(
+                !level.orders.is_empty(),
+                "{}: empty bid level at {price}",
+                context()
+            );
+            expected_bid = Some(price);
+            let mut total = 0;
+            for id in &level.orders {
+                assert!(
+                    seen.insert(*id),
+                    "{}: order {id} appears in multiple levels",
+                    context()
+                );
+                let order = self
+                    .orders
+                    .get(id)
+                    .unwrap_or_else(|| panic!("{}: bid level references missing order", context()));
+                assert_eq!(order.side, Side::Buy, "{}", context());
+                assert_eq!(order.price, price, "{}", context());
+                total += Self::level_qty(order);
+            }
+            assert_eq!(
+                level.total_qty,
+                total,
+                "{}: bad bid total at {price}",
+                context()
+            );
+        }
+
+        for (&price, level) in &self.asks {
+            assert!(
+                !level.orders.is_empty(),
+                "{}: empty ask level at {price}",
+                context()
+            );
+            if expected_ask.is_none() {
+                expected_ask = Some(price);
+            }
+            let mut total = 0;
+            for id in &level.orders {
+                assert!(
+                    seen.insert(*id),
+                    "{}: order {id} appears in multiple levels",
+                    context()
+                );
+                let order = self
+                    .orders
+                    .get(id)
+                    .unwrap_or_else(|| panic!("{}: ask level references missing order", context()));
+                assert_eq!(order.side, Side::Sell, "{}", context());
+                assert_eq!(order.price, price, "{}", context());
+                total += Self::level_qty(order);
+            }
+            assert_eq!(
+                level.total_qty,
+                total,
+                "{}: bad ask total at {price}",
+                context()
+            );
+        }
+
+        assert_eq!(self.best_bid, expected_bid, "{}", context());
+        assert_eq!(self.best_ask, expected_ask, "{}", context());
+        assert_eq!(self.orders.len(), seen.len(), "{}", context());
+        if let (Some(bid), Some(ask)) = (self.best_bid, self.best_ask) {
+            assert!(
+                bid < ask,
+                "{}: crossed book: bid={bid} ask={ask}",
+                context()
+            );
+        }
+    }
+
     fn iceberg_visible(kind: OrderType) -> Option<Quantity> {
         if let OrderType::Iceberg { visible } = kind {
             Some(visible)
@@ -254,13 +340,12 @@ impl OrderBook {
                     continue;
                 }
                 rest.filled += fill;
-                let (rfilled, rkind, rhidden, rside, rprice, rqty) = (
+                let (rfilled, rkind, rhidden, rside, rprice) = (
                     rest.is_filled(),
                     rest.kind,
                     rest.hidden,
                     rest.side,
                     rest.price,
-                    rest.quantity,
                 );
                 incoming.filled += fill;
 
@@ -279,13 +364,12 @@ impl OrderBook {
                 }));
 
                 if rfilled {
-                    let vis = Self::iceberg_visible(rkind).map_or(rqty, |v| v.min(rqty));
                     let levels = match rside {
                         Side::Buy => &mut self.bids,
                         Side::Sell => &mut self.asks,
                     };
                     if let Some(lvl) = levels.get_mut(&rprice) {
-                        lvl.remove(rest_id, vis);
+                        lvl.remove(rest_id, fill);
                         if lvl.orders.is_empty() {
                             self.drop_level(rside, rprice);
                         }
@@ -416,29 +500,14 @@ impl OrderBook {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{BookEvent, CancelRejectReason, Order, OrderType, RejectReason, Side};
+    use crate::types::{BookEvent, CancelRejectReason, Order, RejectReason, Side};
+    use std::collections::BTreeSet;
 
     fn lim(id: OrderId, side: Side, price: Price, qty: Quantity) -> Order {
-        Order {
-            id,
-            side,
-            kind: OrderType::Limit,
-            price,
-            quantity: qty,
-            filled: 0,
-            hidden: 0,
-        }
+        Order::limit(id, side, price, qty)
     }
     fn mkt(id: OrderId, side: Side, qty: Quantity) -> Order {
-        Order {
-            id,
-            side,
-            kind: OrderType::Market,
-            price: 0,
-            quantity: qty,
-            filled: 0,
-            hidden: 0,
-        }
+        Order::market(id, side, qty)
     }
 
     fn assert_trade(
@@ -455,6 +524,37 @@ mod tests {
         assert_eq!(trade.sell_id, sell_id);
         assert_eq!(trade.price, price);
         assert_eq!(trade.quantity, quantity);
+    }
+
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn new(seed: u64) -> Self {
+            Self(seed)
+        }
+
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1);
+            self.0
+        }
+
+        fn range(&mut self, upper: u64) -> u64 {
+            debug_assert_ne!(upper, 0, "range upper bound must be non-zero");
+            self.next() % upper
+        }
+    }
+
+    fn remember_new_resting_order(
+        resting_ids: &mut BTreeSet<OrderId>,
+        id: OrderId,
+        events: &[BookEvent],
+    ) {
+        if events
+            .iter()
+            .any(|event| matches!(event, BookEvent::Rested { order_id, .. } if *order_id == id))
+        {
+            resting_ids.insert(id);
+        }
     }
 
     #[test]
@@ -480,18 +580,7 @@ mod tests {
     fn ioc_drops_remainder() {
         let mut b = OrderBook::new();
         b.submit(lim(1, Side::Sell, 100, 3), 0);
-        let t = b.submit(
-            Order {
-                id: 2,
-                side: Side::Buy,
-                kind: OrderType::Ioc,
-                price: 100,
-                quantity: 10,
-                filled: 0,
-                hidden: 0,
-            },
-            1,
-        );
+        let t = b.submit(Order::ioc(2, Side::Buy, 100, 10), 1);
         assert_eq!(t.len(), 1);
         assert_eq!(t[0].quantity, 3);
         assert_eq!(b.len(), 0);
@@ -501,18 +590,7 @@ mod tests {
     fn fok_rejects_when_partial_only() {
         let mut b = OrderBook::new();
         b.submit(lim(1, Side::Sell, 100, 3), 0);
-        let t = b.submit(
-            Order {
-                id: 2,
-                side: Side::Buy,
-                kind: OrderType::Fok,
-                price: 100,
-                quantity: 10,
-                filled: 0,
-                hidden: 0,
-            },
-            1,
-        );
+        let t = b.submit(Order::fok(2, Side::Buy, 100, 10), 1);
         assert_eq!(t.len(), 0);
         assert_eq!(b.len(), 1);
     }
@@ -521,18 +599,7 @@ mod tests {
     fn post_only_rejects_crossing_order() {
         let mut b = OrderBook::new();
         b.submit(lim(1, Side::Sell, 100, 5), 0);
-        let t = b.submit(
-            Order {
-                id: 2,
-                side: Side::Buy,
-                kind: OrderType::PostOnly,
-                price: 100,
-                quantity: 5,
-                filled: 0,
-                hidden: 0,
-            },
-            1,
-        );
+        let t = b.submit(Order::post_only(2, Side::Buy, 100, 5), 1);
         assert_eq!(t.len(), 0);
         assert_eq!(b.len(), 1);
     }
@@ -540,41 +607,44 @@ mod tests {
     #[test]
     fn iceberg_only_visible_quantity_in_level() {
         let mut b = OrderBook::new();
-        b.submit(
-            Order {
-                id: 1,
-                side: Side::Sell,
-                kind: OrderType::Iceberg { visible: 10 },
-                price: 100,
-                quantity: 10,
-                filled: 0,
-                hidden: 90,
-            },
-            0,
-        );
+        b.submit(Order::iceberg(1, Side::Sell, 100, 100, 10), 0);
         assert_eq!(b.asks.get(&100).map(|l| l.total_qty), Some(10));
     }
 
     #[test]
     fn iceberg_refills_after_visible_fills() {
         let mut b = OrderBook::new();
-        b.submit(
-            Order {
-                id: 1,
-                side: Side::Sell,
-                kind: OrderType::Iceberg { visible: 10 },
-                price: 100,
-                quantity: 10,
-                filled: 0,
-                hidden: 20,
-            },
-            0,
-        );
+        b.submit(Order::iceberg(1, Side::Sell, 100, 30, 10), 0);
         let t = b.submit(mkt(2, Side::Buy, 10), 1);
         assert_eq!(t.len(), 1);
         assert_eq!(t[0].quantity, 10);
         assert_eq!(b.best_ask(), Some(100));
         assert_eq!(b.asks.get(&100).map(|l| l.total_qty), Some(10));
+    }
+
+    #[test]
+    fn iceberg_refill_path_preserves_book_invariants_after_each_visible_fill() {
+        let mut b = OrderBook::new();
+        b.submit(Order::iceberg(1, Side::Sell, 100, 30, 10), 0);
+        b.assert_invariants();
+
+        let first = b.submit(mkt(2, Side::Buy, 10), 1);
+        assert_eq!(first.len(), 1);
+        assert_eq!(b.best_ask(), Some(100));
+        assert_eq!(b.asks.get(&100).map(|l| l.total_qty), Some(10));
+        b.assert_invariants();
+
+        let second = b.submit(mkt(3, Side::Buy, 10), 2);
+        assert_eq!(second.len(), 1);
+        assert_eq!(b.best_ask(), Some(100));
+        assert_eq!(b.asks.get(&100).map(|l| l.total_qty), Some(10));
+        b.assert_invariants();
+
+        let third = b.submit(mkt(4, Side::Buy, 10), 3);
+        assert_eq!(third.len(), 1);
+        assert_eq!(b.best_ask(), None);
+        assert_eq!(b.len(), 0);
+        b.assert_invariants();
     }
 
     #[test]
@@ -613,18 +683,7 @@ mod tests {
         let mut b = OrderBook::new();
         b.submit(lim(1, Side::Sell, 100, 5), 0);
 
-        let events = b.submit_events(
-            Order {
-                id: 2,
-                side: Side::Buy,
-                kind: OrderType::PostOnly,
-                price: 100,
-                quantity: 5,
-                filled: 0,
-                hidden: 0,
-            },
-            1,
-        );
+        let events = b.submit_events(Order::post_only(2, Side::Buy, 100, 5), 1);
 
         assert_eq!(
             events,
@@ -676,5 +735,79 @@ mod tests {
                 reason: CancelRejectReason::UnknownOrderId,
             }]
         );
+    }
+
+    #[test]
+    fn randomized_submit_cancel_flow_preserves_book_invariants() {
+        let mut b = OrderBook::new();
+        let mut next_id = 1;
+        let mut resting_ids = BTreeSet::new();
+
+        for step in 0..512 {
+            if step % 7 == 0 && !resting_ids.is_empty() {
+                let idx = (step * 31 + 11) % resting_ids.len();
+                let id = *resting_ids.iter().nth(idx).expect("resting id");
+                resting_ids.remove(&id);
+                b.cancel(id);
+            } else {
+                let side = if step % 2 == 0 { Side::Buy } else { Side::Sell };
+                let price = 95 + ((step * 17) % 11) as Price;
+                let qty = 1 + ((step * 13) % 5) as Quantity;
+                let id = next_id;
+                next_id += 1;
+
+                let events = b.submit_events(Order::limit(id, side, price, qty), step as Timestamp);
+                remember_new_resting_order(&mut resting_ids, id, &events);
+            }
+
+            b.assert_invariants_at("randomized_limit_flow", 0, step);
+            resting_ids.retain(|id| b.orders.contains_key(id));
+        }
+    }
+
+    #[test]
+    fn seeded_mixed_order_flow_preserves_book_invariants() {
+        for seed in [1, 7, 19, 73] {
+            let mut rng = Lcg::new(seed);
+            let mut b = OrderBook::new();
+            let mut next_id = 1;
+            let mut resting_ids = BTreeSet::new();
+
+            for step in 0..384 {
+                if rng.range(9) == 0 && !resting_ids.is_empty() {
+                    let idx = rng.range(resting_ids.len() as u64) as usize;
+                    let id = *resting_ids.iter().nth(idx).expect("resting id");
+                    resting_ids.remove(&id);
+                    b.cancel(id);
+                } else {
+                    let id = next_id;
+                    next_id += 1;
+                    let side = if rng.range(2) == 0 {
+                        Side::Buy
+                    } else {
+                        Side::Sell
+                    };
+                    let price = 95 + rng.range(11) as Price;
+                    let qty = 1 + rng.range(8) as Quantity;
+                    let order = match rng.range(6) {
+                        0 => Order::limit(id, side, price, qty),
+                        1 => Order::ioc(id, side, price, qty),
+                        2 => Order::fok(id, side, price, qty),
+                        3 => Order::post_only(id, side, price, qty),
+                        4 => {
+                            let visible = 1 + rng.range(qty) as Quantity;
+                            Order::iceberg(id, side, price, qty + visible, visible)
+                        }
+                        _ => Order::market(id, side, qty),
+                    };
+
+                    let events = b.submit_events(order, step as Timestamp);
+                    remember_new_resting_order(&mut resting_ids, id, &events);
+                }
+
+                b.assert_invariants_at("seeded_mixed_order_flow", seed, step);
+                resting_ids.retain(|id| b.orders.contains_key(id));
+            }
+        }
     }
 }

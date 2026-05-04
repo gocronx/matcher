@@ -8,14 +8,12 @@
 //! `src/bin/matcher.rs`. Pick what you want; ignore the rest.
 //!
 //! ```
-//! use matcher::{Order, OrderBook, OrderType, Side};
+//! use matcher::{Order, OrderBook, Side};
 //!
 //! let mut book = OrderBook::new();
-//! book.submit(Order { id: 1, side: Side::Sell, kind: OrderType::Limit,
-//!                     price: 100, quantity: 5, filled: 0, hidden: 0 }, 0);
+//! book.submit(Order::limit(1, Side::Sell, 100, 5), 0);
 //!
-//! let trades = book.submit(Order { id: 2, side: Side::Buy, kind: OrderType::Limit,
-//!                     price: 100, quantity: 3, filled: 0, hidden: 0 }, 1);
+//! let trades = book.submit(Order::limit(2, Side::Buy, 100, 3), 1);
 //! assert_eq!(trades.len(), 1);
 //! assert_eq!(trades[0].quantity, 3);
 //! ```

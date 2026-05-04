@@ -45,12 +45,123 @@ pub struct Order {
 }
 
 impl Order {
+    pub fn market(id: OrderId, side: Side, quantity: Quantity) -> Self {
+        Self::new(id, side, OrderType::Market, 0, quantity, 0)
+    }
+
+    pub fn limit(id: OrderId, side: Side, price: Price, quantity: Quantity) -> Self {
+        Self::new(id, side, OrderType::Limit, price, quantity, 0)
+    }
+
+    pub fn ioc(id: OrderId, side: Side, price: Price, quantity: Quantity) -> Self {
+        Self::new(id, side, OrderType::Ioc, price, quantity, 0)
+    }
+
+    pub fn fok(id: OrderId, side: Side, price: Price, quantity: Quantity) -> Self {
+        Self::new(id, side, OrderType::Fok, price, quantity, 0)
+    }
+
+    pub fn post_only(id: OrderId, side: Side, price: Price, quantity: Quantity) -> Self {
+        Self::new(id, side, OrderType::PostOnly, price, quantity, 0)
+    }
+
+    pub fn iceberg(
+        id: OrderId,
+        side: Side,
+        price: Price,
+        total_quantity: Quantity,
+        visible: Quantity,
+    ) -> Self {
+        let visible = visible.min(total_quantity);
+        let quantity = visible;
+        Self::new(
+            id,
+            side,
+            OrderType::Iceberg { visible },
+            price,
+            quantity,
+            total_quantity.saturating_sub(quantity),
+        )
+    }
+
+    fn new(
+        id: OrderId,
+        side: Side,
+        kind: OrderType,
+        price: Price,
+        quantity: Quantity,
+        hidden: Quantity,
+    ) -> Self {
+        Self {
+            id,
+            side,
+            kind,
+            price,
+            quantity,
+            filled: 0,
+            hidden,
+        }
+    }
+
     pub fn remaining(&self) -> Quantity {
         self.quantity.saturating_sub(self.filled)
     }
 
+    /// User-facing order size for a newly constructed order. For live book
+    /// state, use `remaining() + hidden` because `filled` may be non-zero.
+    pub fn total_quantity(&self) -> Quantity {
+        self.quantity.saturating_add(self.hidden)
+    }
+
     pub fn is_filled(&self) -> bool {
         self.filled >= self.quantity
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn limit_constructor_initializes_public_order_without_internal_state() {
+        let order = Order::limit(42, Side::Buy, 100, 5);
+
+        assert_eq!(order.id, 42);
+        assert_eq!(order.side, Side::Buy);
+        assert_eq!(order.kind, OrderType::Limit);
+        assert_eq!(order.price, 100);
+        assert_eq!(order.quantity, 5);
+        assert_eq!(order.filled, 0);
+        assert_eq!(order.hidden, 0);
+    }
+
+    #[test]
+    fn market_constructor_uses_zero_price_and_requested_quantity() {
+        let order = Order::market(7, Side::Sell, 3);
+
+        assert_eq!(order.kind, OrderType::Market);
+        assert_eq!(order.price, 0);
+        assert_eq!(order.total_quantity(), 3);
+    }
+
+    #[test]
+    fn iceberg_constructor_splits_total_into_visible_and_hidden() {
+        let order = Order::iceberg(9, Side::Sell, 120, 25, 10);
+
+        assert_eq!(order.kind, OrderType::Iceberg { visible: 10 });
+        assert_eq!(order.quantity, 10);
+        assert_eq!(order.hidden, 15);
+        assert_eq!(order.total_quantity(), 25);
+    }
+
+    #[test]
+    fn iceberg_constructor_caps_visible_size_to_total_quantity() {
+        let order = Order::iceberg(9, Side::Sell, 120, 5, 10);
+
+        assert_eq!(order.kind, OrderType::Iceberg { visible: 5 });
+        assert_eq!(order.quantity, 5);
+        assert_eq!(order.hidden, 0);
+        assert_eq!(order.total_quantity(), 5);
     }
 }
 
