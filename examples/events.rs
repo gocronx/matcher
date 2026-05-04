@@ -63,6 +63,7 @@ fn print_events(label: &str, events: Vec<BookEvent>) {
             BookEvent::CancelRejected { order_id, reason } => {
                 println!("  cancel_rejected id={order_id} reason={reason:?}")
             }
+            _ => println!("  (unknown event variant)"),
         }
     }
 }

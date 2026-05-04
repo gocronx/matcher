@@ -15,6 +15,7 @@ pub enum Side {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum OrderType {
     /// Take whatever liquidity is available, ignore price.
     Market,
@@ -179,6 +180,7 @@ pub struct Trade {
 
 /// Why a submitted order was rejected before entering the book.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RejectReason {
     DuplicateOrderId,
     InvalidQuantity,
@@ -189,6 +191,7 @@ pub enum RejectReason {
 
 /// Why a cancel request could not be applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CancelRejectReason {
     UnknownOrderId,
 }
@@ -196,6 +199,7 @@ pub enum CancelRejectReason {
 /// Public event stream emitted by the book for accepted, rejected, resting,
 /// canceled, and traded orders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BookEvent {
     /// A submit request passed validation and entered matching or resting logic.
     Accepted { order_id: OrderId },
