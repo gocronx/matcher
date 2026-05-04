@@ -49,6 +49,15 @@ matcher = { git = "https://github.com/gocronx/matcher" }
 Pull in `matcher::book` only and `tokio` / `socket2` are unused at runtime.
 Other deps: `ahash`, `smallvec`.
 
+Runnable demos live in [`examples/`](examples/):
+
+```sh
+cargo run --example basic        # minimal cross
+cargo run --example events       # full BookEvent stream
+cargo run --example iceberg      # iceberg refill behavior
+cargo run --example order_types  # Limit / Market / IOC / FOK / PostOnly
+```
+
 ---
 
 ## Design
