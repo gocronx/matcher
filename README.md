@@ -15,17 +15,15 @@ in your own actor / channel / lock if you need concurrency.
 ## Library usage
 
 ```rust
-use matcher::{Order, OrderBook, OrderType, Side};
+use matcher::{Order, OrderBook, Side};
 
 let mut book = OrderBook::new();
 
 // Resting sell @ 100, qty 5.
-book.submit(Order { id: 1, side: Side::Sell, kind: OrderType::Limit,
-                    price: 100, quantity: 5, filled: 0, hidden: 0 }, 0);
+book.submit(Order::limit(1, Side::Sell, 100, 5), 0);
 
 // Crossing buy @ 100, qty 3 — produces one trade.
-let trades = book.submit(Order { id: 2, side: Side::Buy, kind: OrderType::Limit,
-                                 price: 100, quantity: 3, filled: 0, hidden: 0 }, 1);
+let trades = book.submit(Order::limit(2, Side::Buy, 100, 3), 1);
 assert_eq!(trades.len(), 1);
 assert_eq!(trades[0].price, 100);
 assert_eq!(trades[0].quantity, 3);
@@ -34,11 +32,10 @@ assert_eq!(trades[0].quantity, 3);
 If callers need the full execution stream, use the event-returning API:
 
 ```rust
-use matcher::{BookEvent, Order, OrderBook, OrderType, Side};
+use matcher::{BookEvent, Order, OrderBook, Side};
 
 let mut book = OrderBook::new();
-let events = book.submit_events(Order { id: 1, side: Side::Buy, kind: OrderType::Limit,
-                                        price: 100, quantity: 5, filled: 0, hidden: 0 }, 0);
+let events = book.submit_events(Order::limit(1, Side::Buy, 100, 5), 0);
 
 assert_eq!(events[0], BookEvent::Accepted { order_id: 1 });
 assert_eq!(events[1], BookEvent::Rested { order_id: 1, remaining: 5 });

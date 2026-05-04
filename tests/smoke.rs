@@ -4,29 +4,17 @@
 use matcher::book::OrderBook;
 use matcher::codec::{decode_inbound, decode_trade, encode_cancel, encode_submit, Inbound};
 use matcher::matcher as engine;
-use matcher::types::{Order, OrderType, Side, Trade};
+use matcher::types::{Order, Side, Trade};
 use matcher::{BookEvent, RejectReason};
 use tokio::sync::mpsc;
-
-fn limit(id: u64, side: Side, price: u64, qty: u64) -> Order {
-    Order {
-        id,
-        side,
-        kind: OrderType::Limit,
-        price,
-        quantity: qty,
-        filled: 0,
-        hidden: 0,
-    }
-}
 
 #[test]
 fn cross_via_book_directly() {
     let mut book = OrderBook::new();
-    book.submit(limit(1, Side::Sell, 100, 5), 0);
-    book.submit(limit(2, Side::Sell, 101, 5), 0);
+    book.submit(Order::limit(1, Side::Sell, 100, 5), 0);
+    book.submit(Order::limit(2, Side::Sell, 101, 5), 0);
 
-    let trades = book.submit(limit(3, Side::Buy, 101, 8), 1);
+    let trades = book.submit(Order::limit(3, Side::Buy, 101, 8), 1);
     assert_eq!(trades.len(), 2);
     assert_eq!(trades[0].quantity, 5);
     assert_eq!(trades[0].price, 100); // walks the cheapest ask first
@@ -52,7 +40,10 @@ fn codec_round_trip_through_actor() {
 
         // Submit a sell, then a crossing buy. Verify the round-trip via the
         // wire codec to confirm the protocol matches the engine's view.
-        for order in [limit(1, Side::Sell, 50, 4), limit(2, Side::Buy, 50, 4)] {
+        for order in [
+            Order::limit(1, Side::Sell, 50, 4),
+            Order::limit(2, Side::Buy, 50, 4),
+        ] {
             let buf = encode_submit(&order);
             let Inbound::Submit(decoded) = decode_inbound(&buf).unwrap() else {
                 panic!("expected Submit");
@@ -88,11 +79,11 @@ fn codec_round_trip_through_actor() {
 fn event_api_is_available_from_crate_root() {
     let mut book = OrderBook::new();
 
-    let events = book.submit_events(limit(1, Side::Buy, 100, 10), 0);
+    let events = book.submit_events(Order::limit(1, Side::Buy, 100, 10), 0);
 
     assert_eq!(events[0], BookEvent::Accepted { order_id: 1 });
     assert_eq!(
-        book.submit_events(limit(1, Side::Buy, 101, 10), 1),
+        book.submit_events(Order::limit(1, Side::Buy, 101, 10), 1),
         vec![BookEvent::Rejected {
             order_id: 1,
             reason: RejectReason::DuplicateOrderId,
