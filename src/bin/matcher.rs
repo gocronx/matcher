@@ -59,7 +59,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let recv_sock = net::bind_multicast(args.in_addr, args.iface)?;
     let send_sock = net::bind_sender(args.iface)?;
-    eprintln!("matcher: in={} out={} iface={}", args.in_addr, args.out_addr, args.iface);
+    eprintln!(
+        "matcher: in={} out={} iface={}",
+        args.in_addr, args.out_addr, args.iface
+    );
 
     let (in_tx, in_rx) = mpsc::channel(CHANNEL_DEPTH);
     let (trade_tx, trade_rx) = mpsc::channel(CHANNEL_DEPTH);
