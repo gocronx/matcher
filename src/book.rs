@@ -67,6 +67,35 @@ impl OrderBook {
         self.orders.is_empty()
     }
 
+    /// Top N bid levels (price descending) as (price, visible quantity).
+    /// Returns fewer entries than N if the book is shallower.
+    pub fn top_bids(&self, n: usize) -> Vec<(Price, Quantity)> {
+        self.bids
+            .iter()
+            .rev()
+            .take(n)
+            .map(|(&p, l)| (p, l.total_qty))
+            .collect()
+    }
+
+    /// Top N ask levels (price ascending) as (price, visible quantity).
+    pub fn top_asks(&self, n: usize) -> Vec<(Price, Quantity)> {
+        self.asks
+            .iter()
+            .take(n)
+            .map(|(&p, l)| (p, l.total_qty))
+            .collect()
+    }
+
+    /// Total visible quantity at a specific price level on the given side.
+    /// Returns 0 if no level exists at that price.
+    pub fn level_qty(&self, side: Side, price: Price) -> Quantity {
+        match side {
+            Side::Buy => self.bids.get(&price).map_or(0, |l| l.total_qty),
+            Side::Sell => self.asks.get(&price).map_or(0, |l| l.total_qty),
+        }
+    }
+
     #[cfg(test)]
     fn assert_invariants(&self) {
         self.assert_invariants_at("book", 0, 0);
@@ -99,7 +128,7 @@ impl OrderBook {
                     .unwrap_or_else(|| panic!("{}: bid level references missing order", context()));
                 assert_eq!(order.side, Side::Buy, "{}", context());
                 assert_eq!(order.price, price, "{}", context());
-                total += Self::level_qty(order);
+                total += Self::order_level_qty(order);
             }
             assert_eq!(
                 level.total_qty,
@@ -131,7 +160,7 @@ impl OrderBook {
                     .unwrap_or_else(|| panic!("{}: ask level references missing order", context()));
                 assert_eq!(order.side, Side::Sell, "{}", context());
                 assert_eq!(order.price, price, "{}", context());
-                total += Self::level_qty(order);
+                total += Self::order_level_qty(order);
             }
             assert_eq!(
                 level.total_qty,
@@ -161,7 +190,7 @@ impl OrderBook {
         }
     }
 
-    fn level_qty(o: &Order) -> Quantity {
+    fn order_level_qty(o: &Order) -> Quantity {
         Self::iceberg_visible(o.kind).map_or(o.remaining(), |v| v.min(o.remaining()))
     }
 
@@ -186,7 +215,12 @@ impl OrderBook {
     }
 
     fn rest(&mut self, order: Order) {
-        let (id, price, side, qty) = (order.id, order.price, order.side, Self::level_qty(&order));
+        let (id, price, side, qty) = (
+            order.id,
+            order.price,
+            order.side,
+            Self::order_level_qty(&order),
+        );
         self.orders.insert(id, order);
         match side {
             Side::Buy => {
@@ -229,7 +263,7 @@ impl OrderBook {
 
     fn remove_resting_order(&mut self, id: OrderId) -> Option<Order> {
         let o = self.orders.remove(&id)?;
-        let (price, qty) = (o.price, Self::level_qty(&o));
+        let (price, qty) = (o.price, Self::order_level_qty(&o));
         let levels = match o.side {
             Side::Buy => &mut self.bids,
             Side::Sell => &mut self.asks,
@@ -763,6 +797,84 @@ mod tests {
             b.assert_invariants_at("randomized_limit_flow", 0, step);
             resting_ids.retain(|id| b.orders.contains_key(id));
         }
+    }
+
+    #[test]
+    fn top_bids_returns_levels_in_descending_price_order() {
+        let mut b = OrderBook::new();
+        b.submit(lim(1, Side::Buy, 100, 5), 0);
+        b.submit(lim(2, Side::Buy, 102, 3), 0);
+        b.submit(lim(3, Side::Buy, 101, 7), 0);
+        b.assert_invariants();
+
+        let levels = b.top_bids(3);
+        assert_eq!(levels.len(), 3);
+        assert_eq!(levels[0], (102, 3));
+        assert_eq!(levels[1], (101, 7));
+        assert_eq!(levels[2], (100, 5));
+    }
+
+    #[test]
+    fn top_asks_returns_levels_in_ascending_price_order() {
+        let mut b = OrderBook::new();
+        b.submit(lim(1, Side::Sell, 103, 4), 0);
+        b.submit(lim(2, Side::Sell, 101, 6), 0);
+        b.submit(lim(3, Side::Sell, 102, 2), 0);
+        b.assert_invariants();
+
+        let levels = b.top_asks(3);
+        assert_eq!(levels.len(), 3);
+        assert_eq!(levels[0], (101, 6));
+        assert_eq!(levels[1], (102, 2));
+        assert_eq!(levels[2], (103, 4));
+    }
+
+    #[test]
+    fn top_n_caps_at_book_depth_when_n_exceeds() {
+        let mut b = OrderBook::new();
+        b.submit(lim(1, Side::Buy, 100, 5), 0);
+        b.submit(lim(2, Side::Buy, 101, 3), 0);
+        b.assert_invariants();
+
+        let levels = b.top_bids(10);
+        assert_eq!(levels.len(), 2);
+        assert_eq!(levels[0], (101, 3));
+        assert_eq!(levels[1], (100, 5));
+    }
+
+    #[test]
+    fn top_n_returns_empty_when_side_is_empty() {
+        let mut b = OrderBook::new();
+        b.submit(lim(1, Side::Buy, 100, 5), 0);
+        b.assert_invariants();
+
+        let ask_levels = b.top_asks(5);
+        assert!(ask_levels.is_empty());
+
+        let bid_levels = b.top_bids(0);
+        assert!(bid_levels.is_empty());
+    }
+
+    #[test]
+    fn level_qty_aggregates_orders_at_same_price() {
+        let mut b = OrderBook::new();
+        b.submit(lim(1, Side::Sell, 100, 5), 0);
+        b.submit(lim(2, Side::Sell, 100, 8), 0);
+        b.submit(lim(3, Side::Sell, 101, 3), 0);
+        b.assert_invariants();
+
+        assert_eq!(b.level_qty(Side::Sell, 100), 13);
+        assert_eq!(b.level_qty(Side::Sell, 101), 3);
+    }
+
+    #[test]
+    fn level_qty_returns_zero_for_unknown_price() {
+        let mut b = OrderBook::new();
+        b.submit(lim(1, Side::Buy, 100, 5), 0);
+        b.assert_invariants();
+
+        assert_eq!(b.level_qty(Side::Buy, 99), 0);
+        assert_eq!(b.level_qty(Side::Sell, 100), 0);
     }
 
     #[test]
