@@ -5,6 +5,7 @@ use matcher::book::OrderBook;
 use matcher::codec::{decode_inbound, decode_trade, encode_cancel, encode_submit, Inbound};
 use matcher::matcher as engine;
 use matcher::types::{Order, OrderType, Side, Trade};
+use matcher::{BookEvent, RejectReason};
 use tokio::sync::mpsc;
 
 fn limit(id: u64, side: Side, price: u64, qty: u64) -> Order {
@@ -81,4 +82,20 @@ fn codec_round_trip_through_actor() {
         drop(in_tx);
         actor.await.unwrap();
     });
+}
+
+#[test]
+fn event_api_is_available_from_crate_root() {
+    let mut book = OrderBook::new();
+
+    let events = book.submit_events(limit(1, Side::Buy, 100, 10), 0);
+
+    assert_eq!(events[0], BookEvent::Accepted { order_id: 1 });
+    assert_eq!(
+        book.submit_events(limit(1, Side::Buy, 101, 10), 1),
+        vec![BookEvent::Rejected {
+            order_id: 1,
+            reason: RejectReason::DuplicateOrderId,
+        }]
+    );
 }

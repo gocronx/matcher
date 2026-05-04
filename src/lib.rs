@@ -1,6 +1,8 @@
 //! Order-matching engine library.
 //!
-//! The headline API is [`OrderBook`]: feed it [`Order`]s, get [`Trade`]s back.
+//! The headline API is [`OrderBook`]: feed it [`Order`]s, get [`Trade`]s back,
+//! or call [`OrderBook::submit_events`] / [`OrderBook::cancel_events`] when
+//! callers need accepts, rejects, cancels, and resting-state updates too.
 //! Everything else (`codec`, `matcher`, `net`) is optional plumbing for one
 //! specific deployment shape — a UDP-multicast daemon, implemented in
 //! `src/bin/matcher.rs`. Pick what you want; ignore the rest.
@@ -25,4 +27,4 @@ pub mod net;
 pub mod types;
 
 pub use book::OrderBook;
-pub use types::{Order, OrderType, Side, Trade};
+pub use types::{BookEvent, CancelRejectReason, Order, OrderType, RejectReason, Side, Trade};

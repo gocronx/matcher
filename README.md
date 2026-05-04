@@ -31,6 +31,19 @@ assert_eq!(trades[0].price, 100);
 assert_eq!(trades[0].quantity, 3);
 ```
 
+If callers need the full execution stream, use the event-returning API:
+
+```rust
+use matcher::{BookEvent, Order, OrderBook, OrderType, Side};
+
+let mut book = OrderBook::new();
+let events = book.submit_events(Order { id: 1, side: Side::Buy, kind: OrderType::Limit,
+                                        price: 100, quantity: 5, filled: 0, hidden: 0 }, 0);
+
+assert_eq!(events[0], BookEvent::Accepted { order_id: 1 });
+assert_eq!(events[1], BookEvent::Rested { order_id: 1, remaining: 5 });
+```
+
 ```toml
 [dependencies]
 matcher = { git = "https://github.com/gocronx/matcher" }

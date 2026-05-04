@@ -255,11 +255,17 @@ mod tests {
     fn rejects_unknown_msg_type() {
         let mut buf = [0u8; PACKET_SIZE];
         buf[0] = 99;
-        assert!(matches!(decode_inbound(&buf), Err(DecodeError::UnknownMsgType(99))));
+        assert!(matches!(
+            decode_inbound(&buf),
+            Err(DecodeError::UnknownMsgType(99))
+        ));
     }
 
     #[test]
     fn rejects_wrong_size() {
-        assert!(matches!(decode_inbound(&[0u8; 16]), Err(DecodeError::WrongSize)));
+        assert!(matches!(
+            decode_inbound(&[0u8; 16]),
+            Err(DecodeError::WrongSize)
+        ));
     }
 }
