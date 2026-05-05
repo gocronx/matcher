@@ -146,6 +146,40 @@ s.sendto(bytes(buf), ("239.0.0.1", 5000))
 
 ---
 
+## Performance
+
+Numbers from `cargo bench` on an Apple M4 (macOS 24.6, Rust release profile,
+`lto = "thin"`, `codegen-units = 1`). Each row is one criterion bench;
+"per op" is the measured time divided by the work per iteration.
+
+| Benchmark                  | Median per iter | Per op    | Throughput        |
+| -------------------------- | --------------- | --------- | ----------------- |
+| `submit_limit_no_match`    | 59.0 µs         | ~59 ns    | ~17 M limits/s    |
+| `submit_market_full_sweep` | 72.6 µs         | ~73 ns    | ~14 M trades/s    |
+| `cancel_random`            | 52.3 µs         | ~52 ns    | ~19 M cancels/s   |
+
+What each bench actually measures (see `benches/order_book.rs`):
+
+- **submit_limit_no_match** — 1 000 fresh non-crossing limit buys submitted
+  into an empty book. Pure level-insertion path, no matching.
+- **submit_market_full_sweep** — pre-fill book with 1 000 resting sells at
+  distinct prices, then a single market buy that sweeps all of them and
+  produces 1 000 trades. Worst-case matching loop.
+- **cancel_random** — pre-fill book with 1 000 limits, cancel each by id.
+  Hits the resting-order removal + best-price update path.
+
+Reproduce with:
+
+```sh
+cargo bench
+```
+
+Numbers are intended as a regression baseline, not a marketing claim — your
+hardware and workload will differ. The single-threaded book design means
+throughput scales by running multiple books, not by adding cores to one.
+
+---
+
 ## Testing
 
 ```sh
