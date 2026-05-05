@@ -15,7 +15,7 @@
 //!
 //! let trades = book.submit(Order::limit(2, Side::Buy, 100, 3), 1);
 //! assert_eq!(trades.len(), 1);
-//! assert_eq!(trades[0].quantity, 3);
+//! assert_eq!(trades[0].quantity.get(), 3);
 //! ```
 
 pub mod book;
@@ -25,4 +25,7 @@ pub mod net;
 pub mod types;
 
 pub use book::OrderBook;
-pub use types::{BookEvent, CancelRejectReason, Order, OrderType, RejectReason, Side, Trade};
+pub use types::{
+    BookEvent, CancelRejectReason, Order, OrderId, OrderType, Price, Quantity, RejectReason, Side,
+    Timestamp, Trade,
+};

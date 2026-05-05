@@ -3,7 +3,7 @@
 //! Run with:
 //!     cargo run --example iceberg
 
-use matcher::{Order, OrderBook, Side};
+use matcher::{Order, OrderBook, Price, Side};
 
 fn main() {
     let mut book = OrderBook::new();
@@ -19,7 +19,7 @@ fn main() {
         println!(
             "market buy id={taker_id} x10 -> {} trade(s) @ px={}",
             trades.len(),
-            trades.first().map(|t| t.price).unwrap_or(0),
+            trades.first().map(|t| t.price).unwrap_or(Price(0)),
         );
         print_book("  after fill", &book);
     }

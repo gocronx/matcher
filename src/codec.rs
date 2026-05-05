@@ -9,7 +9,7 @@
 //!   trade   [0]=3 [1]=aggressor [8..16]=buy_id [16..24]=sell_id
 //!           [24..32]=price [32..40]=quantity [40..48]=ts
 
-use crate::types::{Order, OrderId, OrderType, Quantity, Side, Trade};
+use crate::types::{Order, OrderId, OrderType, Price, Quantity, Side, Timestamp, Trade};
 
 pub const PACKET_SIZE: usize = 64;
 
@@ -48,20 +48,21 @@ pub fn encode_submit(o: &Order) -> [u8; PACKET_SIZE] {
     buf[1] = encode_side(o.side);
     let (kind, visible) = encode_kind(o.kind);
     buf[2] = kind;
-    buf[8..16].copy_from_slice(&o.id.to_be_bytes());
-    buf[16..24].copy_from_slice(&o.price.to_be_bytes());
+    buf[8..16].copy_from_slice(&o.id.0.to_be_bytes());
+    buf[16..24].copy_from_slice(&o.price.0.to_be_bytes());
     // Wire field is the user-facing total quantity. For icebergs the engine
     // splits this into a visible chunk + hidden pool; recover total here.
     let total = o.quantity.saturating_add(o.hidden);
-    buf[24..32].copy_from_slice(&total.to_be_bytes());
-    buf[32..40].copy_from_slice(&visible.to_be_bytes());
+    buf[24..32].copy_from_slice(&total.0.to_be_bytes());
+    buf[32..40].copy_from_slice(&visible.0.to_be_bytes());
     buf
 }
 
-pub fn encode_cancel(id: OrderId) -> [u8; PACKET_SIZE] {
+pub fn encode_cancel(id: impl Into<OrderId>) -> [u8; PACKET_SIZE] {
+    let id = id.into();
     let mut buf = [0u8; PACKET_SIZE];
     buf[0] = MSG_CANCEL;
-    buf[8..16].copy_from_slice(&id.to_be_bytes());
+    buf[8..16].copy_from_slice(&id.0.to_be_bytes());
     buf
 }
 
@@ -69,11 +70,11 @@ pub fn encode_trade(t: &Trade) -> [u8; PACKET_SIZE] {
     let mut buf = [0u8; PACKET_SIZE];
     buf[0] = MSG_TRADE;
     buf[1] = encode_side(t.aggressor);
-    buf[8..16].copy_from_slice(&t.buy_id.to_be_bytes());
-    buf[16..24].copy_from_slice(&t.sell_id.to_be_bytes());
-    buf[24..32].copy_from_slice(&t.price.to_be_bytes());
-    buf[32..40].copy_from_slice(&t.quantity.to_be_bytes());
-    buf[40..48].copy_from_slice(&t.ts.to_be_bytes());
+    buf[8..16].copy_from_slice(&t.buy_id.0.to_be_bytes());
+    buf[16..24].copy_from_slice(&t.sell_id.0.to_be_bytes());
+    buf[24..32].copy_from_slice(&t.price.0.to_be_bytes());
+    buf[32..40].copy_from_slice(&t.quantity.0.to_be_bytes());
+    buf[40..48].copy_from_slice(&t.ts.0.to_be_bytes());
     buf
 }
 
@@ -83,7 +84,7 @@ pub fn decode_inbound(buf: &[u8]) -> Result<Inbound, DecodeError> {
     }
     match buf[0] {
         MSG_SUBMIT => Ok(Inbound::Submit(decode_order(buf)?)),
-        MSG_CANCEL => Ok(Inbound::Cancel(read_u64(buf, 8))),
+        MSG_CANCEL => Ok(Inbound::Cancel(OrderId(read_u64(buf, 8)))),
         other => Err(DecodeError::UnknownMsgType(other)),
     }
 }
@@ -97,18 +98,18 @@ pub fn decode_trade(buf: &[u8]) -> Result<Trade, DecodeError> {
     }
     Ok(Trade {
         aggressor: decode_side(buf[1])?,
-        buy_id: read_u64(buf, 8),
-        sell_id: read_u64(buf, 16),
-        price: read_u64(buf, 24),
-        quantity: read_u64(buf, 32),
-        ts: read_u64(buf, 40),
+        buy_id: OrderId(read_u64(buf, 8)),
+        sell_id: OrderId(read_u64(buf, 16)),
+        price: Price(read_u64(buf, 24)),
+        quantity: Quantity(read_u64(buf, 32)),
+        ts: Timestamp(read_u64(buf, 40)),
     })
 }
 
 fn decode_order(buf: &[u8]) -> Result<Order, DecodeError> {
     let side = decode_side(buf[1])?;
-    let total = read_u64(buf, 24);
-    let visible = read_u64(buf, 32);
+    let total = Quantity(read_u64(buf, 24));
+    let visible = Quantity(read_u64(buf, 32));
     let kind = decode_kind(buf[2], visible)?;
     // Engine state holds the *visible chunk* in `quantity` and the rest of
     // the user's order in `hidden`; the matcher refills `quantity` from
@@ -118,15 +119,15 @@ fn decode_order(buf: &[u8]) -> Result<Order, DecodeError> {
             let chunk = v.min(total);
             (chunk, total.saturating_sub(chunk))
         }
-        _ => (total, 0),
+        _ => (total, Quantity::ZERO),
     };
     Ok(Order {
-        id: read_u64(buf, 8),
+        id: OrderId(read_u64(buf, 8)),
         side,
         kind,
-        price: read_u64(buf, 16),
+        price: Price(read_u64(buf, 16)),
         quantity,
-        filled: 0,
+        filled: Quantity::ZERO,
         hidden,
     })
 }
@@ -148,11 +149,11 @@ fn decode_side(b: u8) -> Result<Side, DecodeError> {
 
 fn encode_kind(k: OrderType) -> (u8, Quantity) {
     match k {
-        OrderType::Market => (KIND_MARKET, 0),
-        OrderType::Limit => (KIND_LIMIT, 0),
-        OrderType::Ioc => (KIND_IOC, 0),
-        OrderType::Fok => (KIND_FOK, 0),
-        OrderType::PostOnly => (KIND_POST_ONLY, 0),
+        OrderType::Market => (KIND_MARKET, Quantity::ZERO),
+        OrderType::Limit => (KIND_LIMIT, Quantity::ZERO),
+        OrderType::Ioc => (KIND_IOC, Quantity::ZERO),
+        OrderType::Fok => (KIND_FOK, Quantity::ZERO),
+        OrderType::PostOnly => (KIND_POST_ONLY, Quantity::ZERO),
         OrderType::Iceberg { visible } => (KIND_ICEBERG, visible),
     }
 }
@@ -179,13 +180,13 @@ mod tests {
 
     fn sample_order() -> Order {
         Order {
-            id: 42,
+            id: OrderId(42),
             side: Side::Buy,
             kind: OrderType::Limit,
-            price: 12_345,
-            quantity: 100,
-            filled: 0,
-            hidden: 0,
+            price: Price(12_345),
+            quantity: Quantity(100),
+            filled: Quantity::ZERO,
+            hidden: Quantity::ZERO,
         }
     }
 
@@ -194,9 +195,9 @@ mod tests {
         let buf = encode_submit(&sample_order());
         match decode_inbound(&buf).unwrap() {
             Inbound::Submit(o) => {
-                assert_eq!(o.id, 42);
-                assert_eq!(o.price, 12_345);
-                assert_eq!(o.quantity, 100);
+                assert_eq!(o.id, OrderId(42));
+                assert_eq!(o.price, Price(12_345));
+                assert_eq!(o.quantity, Quantity(100));
                 assert!(matches!(o.kind, OrderType::Limit));
                 assert_eq!(o.side, Side::Buy);
             }
@@ -206,9 +207,9 @@ mod tests {
 
     #[test]
     fn cancel_round_trip() {
-        let buf = encode_cancel(7);
+        let buf = encode_cancel(7u64);
         match decode_inbound(&buf).unwrap() {
-            Inbound::Cancel(id) => assert_eq!(id, 7),
+            Inbound::Cancel(id) => assert_eq!(id, OrderId(7)),
             _ => panic!("expected Cancel"),
         }
     }
@@ -217,37 +218,39 @@ mod tests {
     fn iceberg_carries_visible_and_hidden() {
         // Sender side: total = quantity + hidden = 100, visible = 30.
         let o = Order {
-            id: 1,
+            id: OrderId(1),
             side: Side::Sell,
-            kind: OrderType::Iceberg { visible: 30 },
-            price: 50,
-            quantity: 30,
-            filled: 0,
-            hidden: 70,
+            kind: OrderType::Iceberg {
+                visible: Quantity(30),
+            },
+            price: Price(50),
+            quantity: Quantity(30),
+            filled: Quantity::ZERO,
+            hidden: Quantity(70),
         };
         let buf = encode_submit(&o);
         let Inbound::Submit(decoded) = decode_inbound(&buf).unwrap() else {
             panic!("submit");
         };
-        assert!(matches!(decoded.kind, OrderType::Iceberg { visible: 30 }));
-        assert_eq!(decoded.quantity, 30);
-        assert_eq!(decoded.hidden, 70);
+        assert!(matches!(decoded.kind, OrderType::Iceberg { visible } if visible == Quantity(30)));
+        assert_eq!(decoded.quantity, Quantity(30));
+        assert_eq!(decoded.hidden, Quantity(70));
     }
 
     #[test]
     fn trade_round_trip() {
         let trade = Trade {
-            buy_id: 10,
-            sell_id: 11,
-            price: 500,
-            quantity: 25,
-            ts: 1_000,
+            buy_id: OrderId(10),
+            sell_id: OrderId(11),
+            price: Price(500),
+            quantity: Quantity(25),
+            ts: Timestamp(1_000),
             aggressor: Side::Sell,
         };
         let buf = encode_trade(&trade);
         let back = decode_trade(&buf).unwrap();
-        assert_eq!(back.buy_id, 10);
-        assert_eq!(back.sell_id, 11);
+        assert_eq!(back.buy_id, OrderId(10));
+        assert_eq!(back.sell_id, OrderId(11));
         assert_eq!(back.aggressor, Side::Sell);
     }
 

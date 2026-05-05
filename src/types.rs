@@ -3,10 +3,187 @@
 //! No serde, no UUIDs, no chrono — everything is a plain integer or enum so
 //! the wire codec can encode each field with one `to_be_bytes` call.
 
-pub type OrderId = u64;
-pub type Price = u64;
-pub type Quantity = u64;
-pub type Timestamp = u64;
+use std::fmt;
+use std::ops::{Add, AddAssign, Sub, SubAssign};
+
+// ---------------------------------------------------------------------------
+// Newtypes
+// ---------------------------------------------------------------------------
+
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+pub struct OrderId(pub u64);
+
+impl OrderId {
+    pub const fn new(v: u64) -> Self {
+        Self(v)
+    }
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl From<u64> for OrderId {
+    fn from(v: u64) -> Self {
+        Self(v)
+    }
+}
+
+impl From<OrderId> for u64 {
+    fn from(v: OrderId) -> Self {
+        v.0
+    }
+}
+
+impl fmt::Display for OrderId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+pub struct Price(pub u64);
+
+impl Price {
+    pub const fn new(v: u64) -> Self {
+        Self(v)
+    }
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl From<u64> for Price {
+    fn from(v: u64) -> Self {
+        Self(v)
+    }
+}
+
+impl From<Price> for u64 {
+    fn from(v: Price) -> Self {
+        v.0
+    }
+}
+
+impl fmt::Display for Price {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+pub struct Quantity(pub u64);
+
+impl Quantity {
+    pub const ZERO: Quantity = Quantity(0);
+
+    pub const fn new(v: u64) -> Self {
+        Self(v)
+    }
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+    pub const fn saturating_add(self, rhs: Quantity) -> Quantity {
+        Quantity(self.0.saturating_add(rhs.0))
+    }
+    pub const fn saturating_sub(self, rhs: Quantity) -> Quantity {
+        Quantity(self.0.saturating_sub(rhs.0))
+    }
+    pub fn min(self, rhs: Quantity) -> Quantity {
+        if self.0 <= rhs.0 {
+            self
+        } else {
+            rhs
+        }
+    }
+}
+
+impl From<u64> for Quantity {
+    fn from(v: u64) -> Self {
+        Self(v)
+    }
+}
+
+impl From<Quantity> for u64 {
+    fn from(v: Quantity) -> Self {
+        v.0
+    }
+}
+
+impl fmt::Display for Quantity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl Add for Quantity {
+    type Output = Quantity;
+    fn add(self, rhs: Quantity) -> Quantity {
+        Quantity(self.0.wrapping_add(rhs.0))
+    }
+}
+
+impl AddAssign for Quantity {
+    fn add_assign(&mut self, rhs: Quantity) {
+        self.0 = self.0.wrapping_add(rhs.0);
+    }
+}
+
+impl Sub for Quantity {
+    type Output = Quantity;
+    fn sub(self, rhs: Quantity) -> Quantity {
+        Quantity(self.0.wrapping_sub(rhs.0))
+    }
+}
+
+impl SubAssign for Quantity {
+    fn sub_assign(&mut self, rhs: Quantity) {
+        self.0 = self.0.wrapping_sub(rhs.0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+pub struct Timestamp(pub u64);
+
+impl Timestamp {
+    pub const fn new(v: u64) -> Self {
+        Self(v)
+    }
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl From<u64> for Timestamp {
+    fn from(v: u64) -> Self {
+        Self(v)
+    }
+}
+
+impl From<Timestamp> for u64 {
+    fn from(v: Timestamp) -> Self {
+        v.0
+    }
+}
+
+impl fmt::Display for Timestamp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Domain types
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Side {
@@ -41,45 +218,101 @@ pub struct Order {
     pub price: Price,
     pub quantity: Quantity,
     pub filled: Quantity,
-    /// Hidden remainder for Iceberg orders, 0 otherwise.
+    /// Hidden remainder for Iceberg orders, Quantity::ZERO otherwise.
     pub hidden: Quantity,
 }
 
 impl Order {
-    pub fn market(id: OrderId, side: Side, quantity: Quantity) -> Self {
-        Self::new(id, side, OrderType::Market, 0, quantity, 0)
+    pub fn market(id: impl Into<OrderId>, side: Side, quantity: impl Into<Quantity>) -> Self {
+        Self::new(
+            id.into(),
+            side,
+            OrderType::Market,
+            Price::ZERO,
+            quantity.into(),
+            Quantity::ZERO,
+        )
     }
 
-    pub fn limit(id: OrderId, side: Side, price: Price, quantity: Quantity) -> Self {
-        Self::new(id, side, OrderType::Limit, price, quantity, 0)
+    pub fn limit(
+        id: impl Into<OrderId>,
+        side: Side,
+        price: impl Into<Price>,
+        quantity: impl Into<Quantity>,
+    ) -> Self {
+        Self::new(
+            id.into(),
+            side,
+            OrderType::Limit,
+            price.into(),
+            quantity.into(),
+            Quantity::ZERO,
+        )
     }
 
-    pub fn ioc(id: OrderId, side: Side, price: Price, quantity: Quantity) -> Self {
-        Self::new(id, side, OrderType::Ioc, price, quantity, 0)
+    pub fn ioc(
+        id: impl Into<OrderId>,
+        side: Side,
+        price: impl Into<Price>,
+        quantity: impl Into<Quantity>,
+    ) -> Self {
+        Self::new(
+            id.into(),
+            side,
+            OrderType::Ioc,
+            price.into(),
+            quantity.into(),
+            Quantity::ZERO,
+        )
     }
 
-    pub fn fok(id: OrderId, side: Side, price: Price, quantity: Quantity) -> Self {
-        Self::new(id, side, OrderType::Fok, price, quantity, 0)
+    pub fn fok(
+        id: impl Into<OrderId>,
+        side: Side,
+        price: impl Into<Price>,
+        quantity: impl Into<Quantity>,
+    ) -> Self {
+        Self::new(
+            id.into(),
+            side,
+            OrderType::Fok,
+            price.into(),
+            quantity.into(),
+            Quantity::ZERO,
+        )
     }
 
-    pub fn post_only(id: OrderId, side: Side, price: Price, quantity: Quantity) -> Self {
-        Self::new(id, side, OrderType::PostOnly, price, quantity, 0)
+    pub fn post_only(
+        id: impl Into<OrderId>,
+        side: Side,
+        price: impl Into<Price>,
+        quantity: impl Into<Quantity>,
+    ) -> Self {
+        Self::new(
+            id.into(),
+            side,
+            OrderType::PostOnly,
+            price.into(),
+            quantity.into(),
+            Quantity::ZERO,
+        )
     }
 
     pub fn iceberg(
-        id: OrderId,
+        id: impl Into<OrderId>,
         side: Side,
-        price: Price,
-        total_quantity: Quantity,
-        visible: Quantity,
+        price: impl Into<Price>,
+        total_quantity: impl Into<Quantity>,
+        visible: impl Into<Quantity>,
     ) -> Self {
-        let visible = visible.min(total_quantity);
+        let total_quantity = total_quantity.into();
+        let visible = visible.into().min(total_quantity);
         let quantity = visible;
         Self::new(
-            id,
+            id.into(),
             side,
             OrderType::Iceberg { visible },
-            price,
+            price.into(),
             quantity,
             total_quantity.saturating_sub(quantity),
         )
@@ -99,7 +332,7 @@ impl Order {
             kind,
             price,
             quantity,
-            filled: 0,
+            filled: Quantity::ZERO,
             hidden,
         }
     }
@@ -119,6 +352,11 @@ impl Order {
     }
 }
 
+// Add a ZERO constant on Price for internal use.
+impl Price {
+    pub const ZERO: Price = Price(0);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,13 +365,13 @@ mod tests {
     fn limit_constructor_initializes_public_order_without_internal_state() {
         let order = Order::limit(42, Side::Buy, 100, 5);
 
-        assert_eq!(order.id, 42);
+        assert_eq!(order.id, OrderId(42));
         assert_eq!(order.side, Side::Buy);
         assert_eq!(order.kind, OrderType::Limit);
-        assert_eq!(order.price, 100);
-        assert_eq!(order.quantity, 5);
-        assert_eq!(order.filled, 0);
-        assert_eq!(order.hidden, 0);
+        assert_eq!(order.price, Price(100));
+        assert_eq!(order.quantity, Quantity(5));
+        assert_eq!(order.filled, Quantity::ZERO);
+        assert_eq!(order.hidden, Quantity::ZERO);
     }
 
     #[test]
@@ -141,28 +379,38 @@ mod tests {
         let order = Order::market(7, Side::Sell, 3);
 
         assert_eq!(order.kind, OrderType::Market);
-        assert_eq!(order.price, 0);
-        assert_eq!(order.total_quantity(), 3);
+        assert_eq!(order.price, Price::ZERO);
+        assert_eq!(order.total_quantity(), Quantity(3));
     }
 
     #[test]
     fn iceberg_constructor_splits_total_into_visible_and_hidden() {
         let order = Order::iceberg(9, Side::Sell, 120, 25, 10);
 
-        assert_eq!(order.kind, OrderType::Iceberg { visible: 10 });
-        assert_eq!(order.quantity, 10);
-        assert_eq!(order.hidden, 15);
-        assert_eq!(order.total_quantity(), 25);
+        assert_eq!(
+            order.kind,
+            OrderType::Iceberg {
+                visible: Quantity(10)
+            }
+        );
+        assert_eq!(order.quantity, Quantity(10));
+        assert_eq!(order.hidden, Quantity(15));
+        assert_eq!(order.total_quantity(), Quantity(25));
     }
 
     #[test]
     fn iceberg_constructor_caps_visible_size_to_total_quantity() {
         let order = Order::iceberg(9, Side::Sell, 120, 5, 10);
 
-        assert_eq!(order.kind, OrderType::Iceberg { visible: 5 });
-        assert_eq!(order.quantity, 5);
-        assert_eq!(order.hidden, 0);
-        assert_eq!(order.total_quantity(), 5);
+        assert_eq!(
+            order.kind,
+            OrderType::Iceberg {
+                visible: Quantity(5)
+            }
+        );
+        assert_eq!(order.quantity, Quantity(5));
+        assert_eq!(order.hidden, Quantity::ZERO);
+        assert_eq!(order.total_quantity(), Quantity(5));
     }
 }
 

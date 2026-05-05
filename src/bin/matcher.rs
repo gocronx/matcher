@@ -6,6 +6,7 @@
 //!
 //! Reads orders from the `--in` multicast group, broadcasts trades to `--out`.
 
+use matcher::types::Timestamp;
 use matcher::{matcher as engine, net};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -43,11 +44,13 @@ fn parse_args() -> Result<Args, String> {
     })
 }
 
-fn now_ns() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0)
+fn now_ns() -> Timestamp {
+    Timestamp(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0),
+    )
 }
 
 #[tokio::main]
