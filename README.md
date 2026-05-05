@@ -149,34 +149,80 @@ s.sendto(bytes(buf), ("239.0.0.1", 5000))
 ## Performance
 
 Numbers from `cargo bench` on an Apple M4 (macOS 24.6, Rust release profile,
-`lto = "thin"`, `codegen-units = 1`). Each row is one criterion bench;
-"per op" is the measured time divided by the work per iteration.
+`lto = "thin"`, `codegen-units = 1`). Each row is one criterion benchmark;
+"per op" divides the measured time by the work per iteration.
 
-| Benchmark                  | Median per iter | Per op    | Throughput        |
-| -------------------------- | --------------- | --------- | ----------------- |
-| `submit_limit_no_match`    | 59.0 µs         | ~59 ns    | ~17 M limits/s    |
-| `submit_market_full_sweep` | 72.6 µs         | ~73 ns    | ~14 M trades/s    |
-| `cancel_random`            | 52.3 µs         | ~52 ns    | ~19 M cancels/s   |
+### Throughput micro-benchmarks (1 000-deep book)
 
-What each bench actually measures (see `benches/order_book.rs`):
+| Benchmark                   | Median per iter | Per op   | Throughput      |
+| --------------------------- | --------------- | -------- | --------------- |
+| `submit_limit_no_match`     | 57.4 µs / 1k    | ~57 ns   | ~17 M limits/s  |
+| `submit_market_full_sweep`  | 62.2 µs / 1k    | ~62 ns   | ~16 M trades/s  |
+| `cancel_random`             | 60.4 µs / 1k    | ~60 ns   | ~17 M cancels/s |
+| `cancel_same_price_stack`   | 105 µs / 1k     | ~105 ns  | ~10 M cancels/s |
+| `mixed_workload_throughput` | 68.4 µs / 1k    | ~68 ns   | ~15 M ops/s     |
 
-- **submit_limit_no_match** — 1 000 fresh non-crossing limit buys submitted
-  into an empty book. Pure level-insertion path, no matching.
-- **submit_market_full_sweep** — pre-fill book with 1 000 resting sells at
-  distinct prices, then a single market buy that sweeps all of them and
-  produces 1 000 trades. Worst-case matching loop.
-- **cancel_random** — pre-fill book with 1 000 limits, cancel each by id.
-  Hits the resting-order removal + best-price update path.
+### Deep-book micro-benchmarks (100 000-deep book)
+
+These use `iter_custom` so the heavy setup is excluded from the measurement.
+Numbers are per single op against a fully populated book.
+
+| Benchmark                | Per op | Notes                                |
+| ------------------------ | ------ | ------------------------------------ |
+| `submit_into_deep_book`  | 149 ns | One limit insert into 100 k-deep map |
+| `cancel_in_deep_book`    | 147 ns | One mid-depth cancel from 100 k book |
+
+The 1 000 → 100 000 depth jump only adds ~80–90 ns per op, consistent with
+`BTreeMap`'s O(log n) growth (log₂(100k)/log₂(1k) ≈ 1.7).
+
+### Per-op latency distribution
+
+`cargo run --release --example latency_dist` runs 200 000 deterministic
+mixed ops (80 % submit / 15 % cancel / 5 % market-sweep) and prints the
+percentile breakdown:
+
+| Percentile  | Latency   |
+| ----------- | --------- |
+| p50         | 83 ns     |
+| p90         | 209 ns    |
+| p95         | 292 ns    |
+| p99         | 750 ns    |
+| p99.9       | 1 709 ns  |
+| max         | ~111 µs   |
+| **end-to-end throughput** | **~7.4 M ops/s** |
+
+Each sample includes one `Instant::now()` call's overhead (~20-40 ns),
+so absolute numbers are upper bounds. The single max outlier (~111 µs)
+is a typical OS scheduler / page-fault spike; medians and p99 are stable
+across runs.
+
+### What each benchmark measures
+
+- **submit_limit_no_match** — 1 000 fresh non-crossing limits into an empty
+  book. Pure level-insertion, no matching.
+- **submit_market_full_sweep** — pre-fill 1 000 resting sells at distinct
+  prices, then one market buy that sweeps all of them and produces 1 000
+  trades. Stresses the matching loop end-to-end.
+- **cancel_random** — pre-fill 1 000 limits at distinct prices, cancel each
+  in random order. Each cancel sits at its own level → BTreeMap dominates.
+- **cancel_same_price_stack** — 1 000 orders at the **same** price level,
+  cancelled in random order. Worst case for `PriceLevel::remove`'s O(n)
+  linear scan; total work is O(n²).
+- **submit_into_deep_book / cancel_in_deep_book** — 100 000 resting orders,
+  measure one op. Captures BTreeMap + cache behavior at scale.
+- **mixed_workload_throughput** — 1 000-step LCG-driven 80/15/5 mix.
+  Closer to real market flow than the targeted micro-benches.
 
 Reproduce with:
 
 ```sh
 cargo bench
+cargo run --release --example latency_dist
 ```
 
 Numbers are intended as a regression baseline, not a marketing claim — your
-hardware and workload will differ. The single-threaded book design means
-throughput scales by running multiple books, not by adding cores to one.
+hardware, kernel, and workload will differ. The single-threaded book design
+means throughput scales by running multiple books, not by adding cores to one.
 
 ---
 
