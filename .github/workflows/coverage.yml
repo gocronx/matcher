@@ -19,10 +19,4 @@ jobs:
         run: cargo install cargo-tarpaulin
       
       - name: Generate coverage
-        run: cargo tarpaulin --out Xml --output-dir ./coverage
-      
-      - name: Upload to codecov
-        uses: codecov/codecov-action@v3
-        with:
-          files: ./coverage/cobertura.xml
-          fail_ci_if_error: true
+        run: cargo tarpaulin --out Stdout
