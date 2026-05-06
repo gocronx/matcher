@@ -125,26 +125,46 @@ impl fmt::Display for Quantity {
 impl Add for Quantity {
     type Output = Quantity;
     fn add(self, rhs: Quantity) -> Quantity {
-        Quantity(self.0.wrapping_add(rhs.0))
+        // Use saturating arithmetic to prevent silent overflow in financial calculations
+        Quantity(self.0.saturating_add(rhs.0))
     }
 }
 
 impl AddAssign for Quantity {
     fn add_assign(&mut self, rhs: Quantity) {
-        self.0 = self.0.wrapping_add(rhs.0);
+        self.0 = self.0.saturating_add(rhs.0);
     }
 }
 
 impl Sub for Quantity {
     type Output = Quantity;
     fn sub(self, rhs: Quantity) -> Quantity {
-        Quantity(self.0.wrapping_sub(rhs.0))
+        // Use saturating arithmetic to prevent underflow
+        Quantity(self.0.saturating_sub(rhs.0))
     }
 }
 
 impl SubAssign for Quantity {
     fn sub_assign(&mut self, rhs: Quantity) {
-        self.0 = self.0.wrapping_sub(rhs.0);
+        self.0 = self.0.saturating_sub(rhs.0);
+    }
+}
+
+impl Quantity {
+    /// Checked addition. Returns None if overflow would occur.
+    pub const fn checked_add(self, rhs: Quantity) -> Option<Quantity> {
+        match self.0.checked_add(rhs.0) {
+            Some(v) => Some(Quantity(v)),
+            None => None,
+        }
+    }
+
+    /// Checked subtraction. Returns None if underflow would occur.
+    pub const fn checked_sub(self, rhs: Quantity) -> Option<Quantity> {
+        match self.0.checked_sub(rhs.0) {
+            Some(v) => Some(Quantity(v)),
+            None => None,
+        }
     }
 }
 
@@ -412,6 +432,58 @@ mod tests {
         assert_eq!(order.hidden, Quantity::ZERO);
         assert_eq!(order.total_quantity(), Quantity(5));
     }
+
+    #[test]
+    fn quantity_add_saturates_instead_of_wrapping() {
+        let max = Quantity(u64::MAX);
+        let one = Quantity(1);
+        
+        // Should saturate at MAX, not wrap to 0
+        assert_eq!(max + one, Quantity(u64::MAX));
+        assert_eq!(max.saturating_add(one), Quantity(u64::MAX));
+    }
+
+    #[test]
+    fn quantity_sub_saturates_instead_of_wrapping() {
+        let zero = Quantity(0);
+        let one = Quantity(1);
+        
+        // Should saturate at 0, not wrap to MAX
+        assert_eq!(zero - one, Quantity(0));
+        assert_eq!(zero.saturating_sub(one), Quantity(0));
+    }
+
+    #[test]
+    fn quantity_checked_add_detects_overflow() {
+        let max = Quantity(u64::MAX);
+        let one = Quantity(1);
+        
+        assert_eq!(max.checked_add(one), None);
+        assert_eq!(Quantity(100).checked_add(Quantity(50)), Some(Quantity(150)));
+    }
+
+    #[test]
+    fn quantity_checked_sub_detects_underflow() {
+        let zero = Quantity(0);
+        let one = Quantity(1);
+        
+        assert_eq!(zero.checked_sub(one), None);
+        assert_eq!(Quantity(100).checked_sub(Quantity(50)), Some(Quantity(50)));
+    }
+
+    #[test]
+    fn quantity_add_assign_saturates() {
+        let mut qty = Quantity(u64::MAX - 10);
+        qty += Quantity(20);
+        assert_eq!(qty, Quantity(u64::MAX));
+    }
+
+    #[test]
+    fn quantity_sub_assign_saturates() {
+        let mut qty = Quantity(5);
+        qty -= Quantity(10);
+        assert_eq!(qty, Quantity(0));
+    }
 }
 
 /// A successful match between two resting/aggressive orders.
@@ -435,6 +507,19 @@ pub enum RejectReason {
     InvalidPrice,
     PostOnlyWouldCross,
     FokNotFillable,
+}
+
+/// Why an order amendment was rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum AmendRejectReason {
+    UnknownOrderId,
+    InvalidPrice,
+    InvalidQuantity,
+    /// Cannot increase quantity on an existing order (only decrease allowed)
+    QuantityIncrease,
+    /// Cannot amend market orders or other non-resting order types
+    OrderTypeNotAmendable,
 }
 
 /// Why a cancel request could not be applied.
@@ -465,6 +550,7 @@ pub enum BookEvent {
     Canceled {
         order_id: OrderId,
         remaining: Quantity,
+        ts: Timestamp,
     },
     /// A submit request was rejected before changing book state.
     Rejected {
@@ -475,5 +561,16 @@ pub enum BookEvent {
     CancelRejected {
         order_id: OrderId,
         reason: CancelRejectReason,
+    },
+    /// An order amendment was successfully applied.
+    Amended {
+        order_id: OrderId,
+        new_price: Option<Price>,
+        new_quantity: Quantity,
+    },
+    /// An amendment request was rejected.
+    AmendRejected {
+        order_id: OrderId,
+        reason: AmendRejectReason,
     },
 }

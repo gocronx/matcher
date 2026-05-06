@@ -1,6 +1,6 @@
 use crate::types::{
-    BookEvent, CancelRejectReason, Order, OrderId, OrderType, Price, Quantity, RejectReason, Side,
-    Timestamp, Trade,
+    AmendRejectReason, BookEvent, CancelRejectReason, Order, OrderId, OrderType, Price, Quantity,
+    RejectReason, Side, Timestamp, Trade,
 };
 use ahash::AHashMap;
 use smallvec::SmallVec;
@@ -345,16 +345,162 @@ impl OrderBook {
     }
 
     pub fn cancel_events(&mut self, id: impl Into<OrderId>) -> Vec<BookEvent> {
+        self.cancel_events_at(id, Timestamp(0))
+    }
+
+    pub fn cancel_events_at(
+        &mut self,
+        id: impl Into<OrderId>,
+        ts: impl Into<Timestamp>,
+    ) -> Vec<BookEvent> {
         let id = id.into();
+        let ts = ts.into();
         match self.remove_resting_order(id) {
             Some(order) => vec![BookEvent::Canceled {
                 order_id: id,
                 remaining: Self::user_remaining(&order),
+                ts,
             }],
             None => vec![BookEvent::CancelRejected {
                 order_id: id,
                 reason: CancelRejectReason::UnknownOrderId,
             }],
+        }
+    }
+
+    /// Amend an existing resting order's price and/or quantity.
+    ///
+    /// Rules:
+    /// - Only resting limit/post-only/iceberg orders can be amended
+    /// - Price changes lose time priority (order moves to back of queue at new price)
+    /// - Quantity can only be decreased (increases are rejected)
+    /// - Quantity decrease maintains time priority
+    pub fn amend(
+        &mut self,
+        id: impl Into<OrderId>,
+        new_price: Option<impl Into<Price>>,
+        new_quantity: Option<impl Into<Quantity>>,
+    ) -> Vec<BookEvent> {
+        let id = id.into();
+        let new_price = new_price.map(|p| p.into());
+        let new_quantity = new_quantity.map(|q| q.into());
+
+        // Validate order exists
+        let Some(order) = self.orders.get(&id) else {
+            return vec![BookEvent::AmendRejected {
+                order_id: id,
+                reason: AmendRejectReason::UnknownOrderId,
+            }];
+        };
+
+        // Validate order type is amendable
+        if !matches!(
+            order.kind,
+            OrderType::Limit | OrderType::PostOnly | OrderType::Iceberg { .. }
+        ) {
+            return vec![BookEvent::AmendRejected {
+                order_id: id,
+                reason: AmendRejectReason::OrderTypeNotAmendable,
+            }];
+        }
+
+        // Validate new price if provided
+        if let Some(price) = new_price {
+            if price == Price::ZERO {
+                return vec![BookEvent::AmendRejected {
+                    order_id: id,
+                    reason: AmendRejectReason::InvalidPrice,
+                }];
+            }
+        }
+
+        // Validate new quantity if provided
+        if let Some(qty) = new_quantity {
+            if qty == Quantity::ZERO {
+                return vec![BookEvent::AmendRejected {
+                    order_id: id,
+                    reason: AmendRejectReason::InvalidQuantity,
+                }];
+            }
+
+            let current_remaining = Self::user_remaining(order);
+            if qty > current_remaining {
+                return vec![BookEvent::AmendRejected {
+                    order_id: id,
+                    reason: AmendRejectReason::QuantityIncrease,
+                }];
+            }
+        }
+
+        let price_changed = new_price.is_some();
+
+        // If price changed, we must remove and re-insert (loses time priority)
+        if price_changed {
+            let mut order = self.remove_resting_order(id).unwrap();
+            order.price = new_price.unwrap();
+
+            if let Some(new_qty) = new_quantity {
+                let current_total = Self::user_remaining(&order);
+                let reduction = current_total.saturating_sub(new_qty);
+
+                if reduction >= order.hidden {
+                    let visible_reduction = reduction.saturating_sub(order.hidden);
+                    order.hidden = Quantity::ZERO;
+                    order.quantity = order.quantity.saturating_sub(visible_reduction);
+                } else {
+                    order.hidden = order.hidden.saturating_sub(reduction);
+                }
+            }
+
+            let final_qty = Self::user_remaining(&order);
+            self.rest(order);
+
+            vec![BookEvent::Amended {
+                order_id: id,
+                new_price,
+                new_quantity: final_qty,
+            }]
+        } else if let Some(new_qty) = new_quantity {
+            // Quantity-only change: modify in place to maintain time priority
+            let order = self.orders.get_mut(&id).unwrap();
+            let old_visible_qty = Self::order_level_qty(order);
+            let current_total = Self::user_remaining(order);
+            let reduction = current_total.saturating_sub(new_qty);
+
+            if reduction >= order.hidden {
+                let visible_reduction = reduction.saturating_sub(order.hidden);
+                order.hidden = Quantity::ZERO;
+                order.quantity = order.quantity.saturating_sub(visible_reduction);
+            } else {
+                order.hidden = order.hidden.saturating_sub(reduction);
+            }
+
+            let new_visible_qty = Self::order_level_qty(order);
+            let visible_delta = old_visible_qty.saturating_sub(new_visible_qty);
+
+            // Update the price level's total quantity
+            let (side, price) = (order.side, order.price);
+            let levels = match side {
+                Side::Buy => &mut self.bids,
+                Side::Sell => &mut self.asks,
+            };
+            if let Some(lvl) = levels.get_mut(&price) {
+                lvl.total_qty = lvl.total_qty.saturating_sub(visible_delta);
+            }
+
+            vec![BookEvent::Amended {
+                order_id: id,
+                new_price: None,
+                new_quantity: new_qty,
+            }]
+        } else {
+            // No changes requested - this is a no-op but not an error
+            let order = self.orders.get(&id).unwrap();
+            vec![BookEvent::Amended {
+                order_id: id,
+                new_price: None,
+                new_quantity: Self::user_remaining(order),
+            }]
         }
     }
 
@@ -1048,13 +1194,21 @@ mod tests {
         let mut b = OrderBook::new();
         b.submit(lim(1, Side::Buy, 100, 10), 0);
 
-        assert_eq!(
-            b.cancel_events(1u64),
-            vec![BookEvent::Canceled {
-                order_id: OrderId(1),
-                remaining: Quantity(10),
-            }]
-        );
+        let events = b.cancel_events_at(1u64, 123);
+        assert_eq!(events.len(), 1);
+        match events[0] {
+            BookEvent::Canceled {
+                order_id,
+                remaining,
+                ts,
+            } => {
+                assert_eq!(order_id, OrderId(1));
+                assert_eq!(remaining, Quantity(10));
+                assert_eq!(ts, Timestamp(123));
+            }
+            _ => panic!("expected Canceled event"),
+        }
+
         assert_eq!(
             b.cancel_events(1u64),
             vec![BookEvent::CancelRejected {
@@ -1401,5 +1555,259 @@ mod tests {
         assert_eq!(b2.len(), b.len());
         assert_eq!(b2.best_bid(), b.best_bid());
         assert_eq!(b2.best_ask(), b.best_ask());
+    }
+
+    // -----------------------------------------------------------------------
+    // Order amendment tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn amend_price_loses_time_priority() {
+        let mut b = OrderBook::new();
+        b.submit(lim(1, Side::Sell, 100, 5), 0); // older
+        b.submit(lim(2, Side::Sell, 100, 5), 1); // newer
+        b.assert_invariants();
+
+        // Amend order 1's price to 101 (should move to back of queue)
+        let events = b.amend(1u64, Some(101u64), None::<u64>);
+        assert_eq!(events.len(), 1);
+        match events[0] {
+            BookEvent::Amended {
+                order_id,
+                new_price,
+                new_quantity,
+            } => {
+                assert_eq!(order_id, OrderId(1));
+                assert_eq!(new_price, Some(Price(101)));
+                assert_eq!(new_quantity, Quantity(5));
+            }
+            _ => panic!("expected Amended event"),
+        }
+
+        // Now order 2 should trade first (it's still at 100)
+        let trades = b.submit(mkt(3, Side::Buy, 5), 2);
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].sell_id, OrderId(2), "FIFO violated after amend");
+        assert_eq!(trades[0].price, Price(100));
+    }
+
+    #[test]
+    fn amend_quantity_decrease_maintains_time_priority() {
+        let mut b = OrderBook::new();
+        b.submit(lim(1, Side::Sell, 100, 10), 0); // older
+        b.submit(lim(2, Side::Sell, 100, 5), 1); // newer
+        b.assert_invariants();
+
+        // Reduce order 1's quantity from 10 to 3
+        let events = b.amend(1u64, None::<u64>, Some(3u64));
+        assert_eq!(events.len(), 1);
+        match events[0] {
+            BookEvent::Amended {
+                order_id,
+                new_price,
+                new_quantity,
+            } => {
+                assert_eq!(order_id, OrderId(1));
+                assert_eq!(new_price, None);
+                assert_eq!(new_quantity, Quantity(3));
+            }
+            _ => panic!("expected Amended event"),
+        }
+
+        // Order 1 should still trade first (time priority maintained)
+        let trades = b.submit(mkt(3, Side::Buy, 3), 2);
+        assert_eq!(trades.len(), 1);
+        assert_eq!(
+            trades[0].sell_id,
+            OrderId(1),
+            "time priority lost on qty decrease"
+        );
+    }
+
+    #[test]
+    fn amend_rejects_quantity_increase() {
+        let mut b = OrderBook::new();
+        b.submit(lim(1, Side::Buy, 100, 10), 0);
+
+        let events = b.amend(1u64, None::<u64>, Some(15u64));
+        assert_eq!(
+            events,
+            vec![BookEvent::AmendRejected {
+                order_id: OrderId(1),
+                reason: AmendRejectReason::QuantityIncrease,
+            }]
+        );
+
+        // Order should still be on book unchanged
+        assert_eq!(b.len(), 1);
+        assert_eq!(b.level_qty(Side::Buy, 100u64), Quantity(10));
+    }
+
+    #[test]
+    fn amend_rejects_unknown_order() {
+        let mut b = OrderBook::new();
+        let events = b.amend(999u64, Some(100u64), None::<u64>);
+        assert_eq!(
+            events,
+            vec![BookEvent::AmendRejected {
+                order_id: OrderId(999),
+                reason: AmendRejectReason::UnknownOrderId,
+            }]
+        );
+    }
+
+    #[test]
+    fn amend_rejects_zero_price() {
+        let mut b = OrderBook::new();
+        b.submit(lim(1, Side::Buy, 100, 10), 0);
+
+        let events = b.amend(1u64, Some(0u64), None::<u64>);
+        assert_eq!(
+            events,
+            vec![BookEvent::AmendRejected {
+                order_id: OrderId(1),
+                reason: AmendRejectReason::InvalidPrice,
+            }]
+        );
+    }
+
+    #[test]
+    fn amend_rejects_zero_quantity() {
+        let mut b = OrderBook::new();
+        b.submit(lim(1, Side::Buy, 100, 10), 0);
+
+        let events = b.amend(1u64, None::<u64>, Some(0u64));
+        assert_eq!(
+            events,
+            vec![BookEvent::AmendRejected {
+                order_id: OrderId(1),
+                reason: AmendRejectReason::InvalidQuantity,
+            }]
+        );
+    }
+
+    #[test]
+    fn amend_both_price_and_quantity() {
+        let mut b = OrderBook::new();
+        b.submit(lim(1, Side::Sell, 100, 10), 0);
+        b.assert_invariants();
+
+        let events = b.amend(1u64, Some(101u64), Some(5u64));
+        assert_eq!(events.len(), 1);
+        match events[0] {
+            BookEvent::Amended {
+                order_id,
+                new_price,
+                new_quantity,
+            } => {
+                assert_eq!(order_id, OrderId(1));
+                assert_eq!(new_price, Some(Price(101)));
+                assert_eq!(new_quantity, Quantity(5));
+            }
+            _ => panic!("expected Amended event"),
+        }
+
+        assert_eq!(b.best_ask(), Some(Price(101)));
+        assert_eq!(b.level_qty(Side::Sell, 101u64), Quantity(5));
+        assert_eq!(b.level_qty(Side::Sell, 100u64), Quantity::ZERO);
+        b.assert_invariants();
+    }
+
+    #[test]
+    fn amend_iceberg_reduces_hidden_first() {
+        let mut b = OrderBook::new();
+        // Iceberg: total=30, visible=10, hidden=20
+        b.submit(Order::iceberg(1, Side::Sell, 100, 30, 10), 0);
+        assert_eq!(b.level_qty(Side::Sell, 100u64), Quantity(10));
+
+        // Reduce to 25 (should reduce hidden from 20 to 15)
+        let events = b.amend(1u64, None::<u64>, Some(25u64));
+        assert_eq!(events.len(), 1);
+        match events[0] {
+            BookEvent::Amended { new_quantity, .. } => {
+                assert_eq!(new_quantity, Quantity(25));
+            }
+            _ => panic!("expected Amended event"),
+        }
+
+        // Visible should still be 10
+        assert_eq!(b.level_qty(Side::Sell, 100u64), Quantity(10));
+
+        // Trade away visible portion - should refill to 10 from remaining 15 hidden
+        let t1 = b.submit(mkt(2, Side::Buy, 10), 1);
+        assert_eq!(t1.len(), 1);
+        assert_eq!(b.level_qty(Side::Sell, 100u64), Quantity(10));
+
+        // Trade away second visible portion - should refill to 5 (last of hidden)
+        let t2 = b.submit(mkt(3, Side::Buy, 10), 2);
+        assert_eq!(t2.len(), 1);
+        assert_eq!(b.level_qty(Side::Sell, 100u64), Quantity(5));
+
+        // Trade away final portion
+        let t3 = b.submit(mkt(4, Side::Buy, 5), 3);
+        assert_eq!(t3.len(), 1);
+        assert_eq!(b.len(), 0);
+    }
+
+    #[test]
+    fn amend_iceberg_reduces_visible_when_hidden_exhausted() {
+        let mut b = OrderBook::new();
+        // Iceberg: total=30, visible=10, hidden=20
+        b.submit(Order::iceberg(1, Side::Sell, 100, 30, 10), 0);
+
+        // Reduce to 5 (reduce hidden 20 + visible 5)
+        let events = b.amend(1u64, None::<u64>, Some(5u64));
+        assert_eq!(events.len(), 1);
+
+        // Visible should now be 5
+        assert_eq!(b.level_qty(Side::Sell, 100u64), Quantity(5));
+
+        // Trade should consume all 5 and book should be empty
+        let trades = b.submit(mkt(2, Side::Buy, 5), 1);
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].quantity, Quantity(5));
+        assert_eq!(b.len(), 0);
+    }
+
+    #[test]
+    fn amend_preserves_book_invariants() {
+        let mut b = OrderBook::new();
+        b.submit(lim(1, Side::Buy, 100, 10), 0);
+        b.submit(lim(2, Side::Buy, 99, 5), 0);
+        b.submit(lim(3, Side::Sell, 101, 8), 0);
+        b.assert_invariants();
+
+        // Amend buy order price
+        b.amend(1u64, Some(98u64), None::<u64>);
+        b.assert_invariants();
+
+        // Amend sell order quantity
+        b.amend(3u64, None::<u64>, Some(5u64));
+        b.assert_invariants();
+
+        // Amend both
+        b.amend(2u64, Some(97u64), Some(3u64));
+        b.assert_invariants();
+    }
+
+    #[test]
+    fn amend_post_only_order_works() {
+        let mut b = OrderBook::new();
+        b.submit(Order::post_only(1, Side::Buy, 100, 10), 0);
+
+        let events = b.amend(1u64, Some(99u64), Some(5u64));
+        assert_eq!(events.len(), 1);
+        match events[0] {
+            BookEvent::Amended {
+                order_id,
+                new_price,
+                new_quantity,
+            } => {
+                assert_eq!(order_id, OrderId(1));
+                assert_eq!(new_price, Some(Price(99)));
+                assert_eq!(new_quantity, Quantity(5));
+            }
+            _ => panic!("expected Amended event"),
+        }
     }
 }

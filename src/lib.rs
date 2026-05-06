@@ -26,6 +26,6 @@ pub mod types;
 
 pub use book::{OrderBook, SnapshotError};
 pub use types::{
-    BookEvent, CancelRejectReason, Order, OrderId, OrderType, Price, Quantity, RejectReason, Side,
-    Timestamp, Trade,
+    AmendRejectReason, BookEvent, CancelRejectReason, Order, OrderId, OrderType, Price, Quantity,
+    RejectReason, Side, Timestamp, Trade,
 };
