@@ -1,0 +1,33 @@
+[package]
+name = "matcher-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+
+[dependencies.matcher]
+path = ".."
+
+[[bin]]
+name = "fuzz_codec"
+path = "fuzz_targets/fuzz_codec.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_snapshot"
+path = "fuzz_targets/fuzz_snapshot.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_order_book"
+path = "fuzz_targets/fuzz_order_book.rs"
+test = false
+doc = false
