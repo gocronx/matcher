@@ -13,6 +13,7 @@ arbitrary = { version = "1", features = ["derive"] }
 
 [dependencies.matcher]
 path = ".."
+features = ["fuzzing"]
 
 [[bin]]
 name = "fuzz_codec"

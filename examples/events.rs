@@ -30,10 +30,10 @@ fn main() {
     );
 
     // Cancel the partially filled rest of order 2.
-    print_events("cancel id 2", book.cancel_events(2));
+    print_events("cancel id 2", book.cancel_events(2, 2));
 
     // Cancel an unknown id is also surfaced as an event.
-    print_events("cancel id 999 (unknown)", book.cancel_events(999));
+    print_events("cancel id 999 (unknown)", book.cancel_events(999, 3));
 }
 
 fn print_events(label: &str, events: Vec<BookEvent>) {

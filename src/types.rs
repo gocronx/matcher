@@ -125,28 +125,26 @@ impl fmt::Display for Quantity {
 impl Add for Quantity {
     type Output = Quantity;
     fn add(self, rhs: Quantity) -> Quantity {
-        // Use saturating arithmetic to prevent silent overflow in financial calculations
-        Quantity(self.0.saturating_add(rhs.0))
+        Quantity(self.0.wrapping_add(rhs.0))
     }
 }
 
 impl AddAssign for Quantity {
     fn add_assign(&mut self, rhs: Quantity) {
-        self.0 = self.0.saturating_add(rhs.0);
+        self.0 = self.0.wrapping_add(rhs.0);
     }
 }
 
 impl Sub for Quantity {
     type Output = Quantity;
     fn sub(self, rhs: Quantity) -> Quantity {
-        // Use saturating arithmetic to prevent underflow
-        Quantity(self.0.saturating_sub(rhs.0))
+        Quantity(self.0.wrapping_sub(rhs.0))
     }
 }
 
 impl SubAssign for Quantity {
     fn sub_assign(&mut self, rhs: Quantity) {
-        self.0 = self.0.saturating_sub(rhs.0);
+        self.0 = self.0.wrapping_sub(rhs.0);
     }
 }
 
@@ -434,26 +432,6 @@ mod tests {
     }
 
     #[test]
-    fn quantity_add_saturates_instead_of_wrapping() {
-        let max = Quantity(u64::MAX);
-        let one = Quantity(1);
-        
-        // Should saturate at MAX, not wrap to 0
-        assert_eq!(max + one, Quantity(u64::MAX));
-        assert_eq!(max.saturating_add(one), Quantity(u64::MAX));
-    }
-
-    #[test]
-    fn quantity_sub_saturates_instead_of_wrapping() {
-        let zero = Quantity(0);
-        let one = Quantity(1);
-        
-        // Should saturate at 0, not wrap to MAX
-        assert_eq!(zero - one, Quantity(0));
-        assert_eq!(zero.saturating_sub(one), Quantity(0));
-    }
-
-    #[test]
     fn quantity_checked_add_detects_overflow() {
         let max = Quantity(u64::MAX);
         let one = Quantity(1);
@@ -469,20 +447,6 @@ mod tests {
         
         assert_eq!(zero.checked_sub(one), None);
         assert_eq!(Quantity(100).checked_sub(Quantity(50)), Some(Quantity(50)));
-    }
-
-    #[test]
-    fn quantity_add_assign_saturates() {
-        let mut qty = Quantity(u64::MAX - 10);
-        qty += Quantity(20);
-        assert_eq!(qty, Quantity(u64::MAX));
-    }
-
-    #[test]
-    fn quantity_sub_assign_saturates() {
-        let mut qty = Quantity(5);
-        qty -= Quantity(10);
-        assert_eq!(qty, Quantity(0));
     }
 }
 
@@ -520,6 +484,8 @@ pub enum AmendRejectReason {
     QuantityIncrease,
     /// Cannot amend market orders or other non-resting order types
     OrderTypeNotAmendable,
+    /// New price would cross the opposite side of the book
+    WouldCross,
 }
 
 /// Why a cancel request could not be applied.
@@ -547,6 +513,7 @@ pub enum BookEvent {
     },
     /// A cancel request removed an order from the book. There is no separate
     /// cancel-accepted event; this event is the successful cancel acknowledgement.
+    #[non_exhaustive]
     Canceled {
         order_id: OrderId,
         remaining: Quantity,

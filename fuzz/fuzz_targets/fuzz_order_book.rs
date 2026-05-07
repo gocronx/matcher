@@ -11,10 +11,15 @@ enum BookOp {
         side: bool, // true = Buy, false = Sell
         price: u64,
         qty: u64,
-        kind: u8, // 0=Limit, 1=Market, 2=IOC, 3=FOK, 4=PostOnly
+        kind: u8, // 0=Limit, 1=Market, 2=IOC, 3=FOK, 4=PostOnly, 5=Iceberg
     },
     Cancel {
         id: u64,
+    },
+    Amend {
+        id: u64,
+        new_price: Option<u64>,
+        new_qty: Option<u64>,
     },
 }
 
@@ -29,12 +34,16 @@ fuzz_target!(|ops: Vec<BookOp>| {
                 }
                 
                 let side = if side { Side::Buy } else { Side::Sell };
-                let order = match kind % 5 {
+                let order = match kind % 6 {
                     0 => Order::limit(id, side, price, qty),
                     1 => Order::market(id, side, qty),
                     2 => Order::ioc(id, side, price, qty),
                     3 => Order::fok(id, side, price, qty),
-                    _ => Order::post_only(id, side, price, qty),
+                    4 => Order::post_only(id, side, price, qty),
+                    _ => {
+                        let visible = qty / 2 + 1;
+                        Order::iceberg(id, side, price, qty, visible)
+                    }
                 };
                 
                 let _ = book.submit(order, 0);
@@ -42,10 +51,14 @@ fuzz_target!(|ops: Vec<BookOp>| {
             BookOp::Cancel { id } => {
                 let _ = book.cancel(id);
             }
+            BookOp::Amend { id, new_price, new_qty } => {
+                let _ = book.amend(id, new_price, new_qty);
+            }
         }
         
         // Critical: check invariants after each operation
-        #[cfg(test)]
+        // Expose assert_invariants for fuzzing via cfg(any(test, feature = "fuzzing"))
+        #[cfg(any(test, feature = "fuzzing"))]
         book.assert_invariants();
     }
 });

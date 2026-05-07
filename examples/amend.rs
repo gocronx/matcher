@@ -3,7 +3,7 @@
 //! Run with:
 //!     cargo run --example amend
 
-use matcher::{BookEvent, Order, OrderBook, Side};
+use matcher::{BookEvent, Order, OrderBook, Price, Quantity, Side};
 
 fn main() {
     let mut book = OrderBook::new();
@@ -20,7 +20,7 @@ fn main() {
 
     // Quantity decrease maintains time priority
     println!("2. Amend order 1: reduce quantity from 10 to 3");
-    let events = book.amend(1u64, None::<u64>, Some(3u64));
+    let events = book.amend(1u64, None, Some(Quantity(3)));
     print_events(&events);
     println!("   Total at 100: {}\n", book.level_qty(Side::Sell, 100));
 
@@ -36,7 +36,7 @@ fn main() {
     println!("   Order 4: sell 8 @ 101\n");
 
     println!("5. Amend order 2: change price from 100 to 101");
-    let events = book.amend(2u64, Some(101u64), None::<u64>);
+    let events = book.amend(2u64, Some(Price(101)), None);
     print_events(&events);
     println!("   Order 2 moved to back of queue at 101\n");
 
@@ -52,18 +52,18 @@ fn main() {
     println!("   Visible at 102: {}\n", book.level_qty(Side::Sell, 102));
 
     println!("8. Amend iceberg: reduce total from 30 to 15");
-    let events = book.amend(6u64, None::<u64>, Some(15u64));
+    let events = book.amend(6u64, None, Some(Quantity(15)));
     print_events(&events);
     println!("   Visible at 102: {} (unchanged)", book.level_qty(Side::Sell, 102));
     println!("   Hidden reduced from 20 to 5\n");
 
     // Rejection examples
     println!("9. Try to increase quantity (rejected):");
-    let events = book.amend(6u64, None::<u64>, Some(20u64));
+    let events = book.amend(6u64, None, Some(Quantity(20)));
     print_events(&events);
 
     println!("\n10. Try to amend unknown order (rejected):");
-    let events = book.amend(999u64, Some(100u64), None::<u64>);
+    let events = book.amend(999u64, Some(Price(100)), None);
     print_events(&events);
 
     println!("\n=== Final book state ===");

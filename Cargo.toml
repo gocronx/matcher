@@ -5,6 +5,9 @@ edition = "2021"
 license = "MIT"
 description = "Single-product trading matching engine over UDP multicast"
 
+[features]
+fuzzing = []
+
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "io-util", "time"] }
 socket2 = "0.5"

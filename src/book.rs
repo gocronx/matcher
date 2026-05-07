@@ -159,12 +159,12 @@ impl OrderBook {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "fuzzing"))]
     fn assert_invariants(&self) {
         self.assert_invariants_at("book", 0, 0);
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "fuzzing"))]
     fn assert_invariants_at(&self, scenario: &str, seed: u64, step: usize) {
         let mut seen = std::collections::HashSet::new();
         let mut expected_bid = None;
@@ -344,11 +344,7 @@ impl OrderBook {
         self.remove_resting_order(id.into()).is_some()
     }
 
-    pub fn cancel_events(&mut self, id: impl Into<OrderId>) -> Vec<BookEvent> {
-        self.cancel_events_at(id, Timestamp(0))
-    }
-
-    pub fn cancel_events_at(
+    pub fn cancel_events(
         &mut self,
         id: impl Into<OrderId>,
         ts: impl Into<Timestamp>,
@@ -373,17 +369,21 @@ impl OrderBook {
     /// Rules:
     /// - Only resting limit/post-only/iceberg orders can be amended
     /// - Price changes lose time priority (order moves to back of queue at new price)
+    /// - Price changes that would cross the book are rejected
     /// - Quantity can only be decreased (increases are rejected)
     /// - Quantity decrease maintains time priority
     pub fn amend(
         &mut self,
         id: impl Into<OrderId>,
-        new_price: Option<impl Into<Price>>,
-        new_quantity: Option<impl Into<Quantity>>,
+        new_price: Option<Price>,
+        new_quantity: Option<Quantity>,
     ) -> Vec<BookEvent> {
         let id = id.into();
-        let new_price = new_price.map(|p| p.into());
-        let new_quantity = new_quantity.map(|q| q.into());
+
+        // No-op if nothing to change
+        if new_price.is_none() && new_quantity.is_none() {
+            return vec![];
+        }
 
         // Validate order exists
         let Some(order) = self.orders.get(&id) else {
@@ -410,6 +410,19 @@ impl OrderBook {
                 return vec![BookEvent::AmendRejected {
                     order_id: id,
                     reason: AmendRejectReason::InvalidPrice,
+                }];
+            }
+
+            // Check if new price would cross the book
+            let would_cross = match order.side {
+                Side::Buy => self.best_ask.is_some_and(|a| price >= a),
+                Side::Sell => self.best_bid.is_some_and(|b| price <= b),
+            };
+
+            if would_cross {
+                return vec![BookEvent::AmendRejected {
+                    order_id: id,
+                    reason: AmendRejectReason::WouldCross,
                 }];
             }
         }
@@ -440,16 +453,7 @@ impl OrderBook {
             order.price = new_price.unwrap();
 
             if let Some(new_qty) = new_quantity {
-                let current_total = Self::user_remaining(&order);
-                let reduction = current_total.saturating_sub(new_qty);
-
-                if reduction >= order.hidden {
-                    let visible_reduction = reduction.saturating_sub(order.hidden);
-                    order.hidden = Quantity::ZERO;
-                    order.quantity = order.quantity.saturating_sub(visible_reduction);
-                } else {
-                    order.hidden = order.hidden.saturating_sub(reduction);
-                }
+                Self::reduce_order_quantity(&mut order, new_qty);
             }
 
             let final_qty = Self::user_remaining(&order);
@@ -464,16 +468,8 @@ impl OrderBook {
             // Quantity-only change: modify in place to maintain time priority
             let order = self.orders.get_mut(&id).unwrap();
             let old_visible_qty = Self::order_level_qty(order);
-            let current_total = Self::user_remaining(order);
-            let reduction = current_total.saturating_sub(new_qty);
-
-            if reduction >= order.hidden {
-                let visible_reduction = reduction.saturating_sub(order.hidden);
-                order.hidden = Quantity::ZERO;
-                order.quantity = order.quantity.saturating_sub(visible_reduction);
-            } else {
-                order.hidden = order.hidden.saturating_sub(reduction);
-            }
+            
+            Self::reduce_order_quantity(order, new_qty);
 
             let new_visible_qty = Self::order_level_qty(order);
             let visible_delta = old_visible_qty.saturating_sub(new_visible_qty);
@@ -494,13 +490,23 @@ impl OrderBook {
                 new_quantity: new_qty,
             }]
         } else {
-            // No changes requested - this is a no-op but not an error
-            let order = self.orders.get(&id).unwrap();
-            vec![BookEvent::Amended {
-                order_id: id,
-                new_price: None,
-                new_quantity: Self::user_remaining(order),
-            }]
+            unreachable!("checked at start of function")
+        }
+    }
+
+    /// Helper to reduce order quantity (for iceberg orders, reduces hidden first)
+    fn reduce_order_quantity(order: &mut Order, new_qty: Quantity) {
+        let current_total = Self::user_remaining(order);
+        let reduction = current_total.saturating_sub(new_qty);
+
+        if reduction >= order.hidden {
+            // Reduce all hidden and some visible
+            let visible_reduction = reduction.saturating_sub(order.hidden);
+            order.hidden = Quantity::ZERO;
+            order.quantity = order.quantity.saturating_sub(visible_reduction);
+        } else {
+            // Only reduce hidden
+            order.hidden = order.hidden.saturating_sub(reduction);
         }
     }
 
@@ -1194,7 +1200,7 @@ mod tests {
         let mut b = OrderBook::new();
         b.submit(lim(1, Side::Buy, 100, 10), 0);
 
-        let events = b.cancel_events_at(1u64, 123);
+        let events = b.cancel_events(1u64, 123);
         assert_eq!(events.len(), 1);
         match events[0] {
             BookEvent::Canceled {
@@ -1210,7 +1216,7 @@ mod tests {
         }
 
         assert_eq!(
-            b.cancel_events(1u64),
+            b.cancel_events(1u64, 124),
             vec![BookEvent::CancelRejected {
                 order_id: OrderId(1),
                 reason: CancelRejectReason::UnknownOrderId,
@@ -1569,7 +1575,7 @@ mod tests {
         b.assert_invariants();
 
         // Amend order 1's price to 101 (should move to back of queue)
-        let events = b.amend(1u64, Some(101u64), None::<u64>);
+        let events = b.amend(1u64, Some(Price(101)), None);
         assert_eq!(events.len(), 1);
         match events[0] {
             BookEvent::Amended {
@@ -1599,7 +1605,7 @@ mod tests {
         b.assert_invariants();
 
         // Reduce order 1's quantity from 10 to 3
-        let events = b.amend(1u64, None::<u64>, Some(3u64));
+        let events = b.amend(1u64, None, Some(Quantity(3)));
         assert_eq!(events.len(), 1);
         match events[0] {
             BookEvent::Amended {
@@ -1629,7 +1635,7 @@ mod tests {
         let mut b = OrderBook::new();
         b.submit(lim(1, Side::Buy, 100, 10), 0);
 
-        let events = b.amend(1u64, None::<u64>, Some(15u64));
+        let events = b.amend(1u64, None, Some(Quantity(15)));
         assert_eq!(
             events,
             vec![BookEvent::AmendRejected {
@@ -1646,7 +1652,7 @@ mod tests {
     #[test]
     fn amend_rejects_unknown_order() {
         let mut b = OrderBook::new();
-        let events = b.amend(999u64, Some(100u64), None::<u64>);
+        let events = b.amend(999u64, Some(Price(100)), None);
         assert_eq!(
             events,
             vec![BookEvent::AmendRejected {
@@ -1661,7 +1667,7 @@ mod tests {
         let mut b = OrderBook::new();
         b.submit(lim(1, Side::Buy, 100, 10), 0);
 
-        let events = b.amend(1u64, Some(0u64), None::<u64>);
+        let events = b.amend(1u64, Some(Price(0)), None);
         assert_eq!(
             events,
             vec![BookEvent::AmendRejected {
@@ -1676,7 +1682,7 @@ mod tests {
         let mut b = OrderBook::new();
         b.submit(lim(1, Side::Buy, 100, 10), 0);
 
-        let events = b.amend(1u64, None::<u64>, Some(0u64));
+        let events = b.amend(1u64, None, Some(Quantity(0)));
         assert_eq!(
             events,
             vec![BookEvent::AmendRejected {
@@ -1692,7 +1698,7 @@ mod tests {
         b.submit(lim(1, Side::Sell, 100, 10), 0);
         b.assert_invariants();
 
-        let events = b.amend(1u64, Some(101u64), Some(5u64));
+        let events = b.amend(1u64, Some(Price(101)), Some(Quantity(5)));
         assert_eq!(events.len(), 1);
         match events[0] {
             BookEvent::Amended {
@@ -1721,7 +1727,7 @@ mod tests {
         assert_eq!(b.level_qty(Side::Sell, 100u64), Quantity(10));
 
         // Reduce to 25 (should reduce hidden from 20 to 15)
-        let events = b.amend(1u64, None::<u64>, Some(25u64));
+        let events = b.amend(1u64, None, Some(Quantity(25)));
         assert_eq!(events.len(), 1);
         match events[0] {
             BookEvent::Amended { new_quantity, .. } => {
@@ -1756,7 +1762,7 @@ mod tests {
         b.submit(Order::iceberg(1, Side::Sell, 100, 30, 10), 0);
 
         // Reduce to 5 (reduce hidden 20 + visible 5)
-        let events = b.amend(1u64, None::<u64>, Some(5u64));
+        let events = b.amend(1u64, None, Some(Quantity(5)));
         assert_eq!(events.len(), 1);
 
         // Visible should now be 5
@@ -1778,15 +1784,15 @@ mod tests {
         b.assert_invariants();
 
         // Amend buy order price
-        b.amend(1u64, Some(98u64), None::<u64>);
+        b.amend(1u64, Some(Price(98)), None);
         b.assert_invariants();
 
         // Amend sell order quantity
-        b.amend(3u64, None::<u64>, Some(5u64));
+        b.amend(3u64, None, Some(Quantity(5)));
         b.assert_invariants();
 
         // Amend both
-        b.amend(2u64, Some(97u64), Some(3u64));
+        b.amend(2u64, Some(Price(97)), Some(Quantity(3)));
         b.assert_invariants();
     }
 
@@ -1795,7 +1801,7 @@ mod tests {
         let mut b = OrderBook::new();
         b.submit(Order::post_only(1, Side::Buy, 100, 10), 0);
 
-        let events = b.amend(1u64, Some(99u64), Some(5u64));
+        let events = b.amend(1u64, Some(Price(99)), Some(Quantity(5)));
         assert_eq!(events.len(), 1);
         match events[0] {
             BookEvent::Amended {
@@ -1809,5 +1815,83 @@ mod tests {
             }
             _ => panic!("expected Amended event"),
         }
+    }
+
+    #[test]
+    fn amend_rejects_crossing_buy_order() {
+        let mut b = OrderBook::new();
+        b.submit(lim(1, Side::Buy, 100, 5), 0);
+        b.submit(lim(2, Side::Sell, 110, 5), 1);
+        b.assert_invariants();
+
+        // Try to amend buy order to cross the ask
+        let events = b.amend(1u64, Some(Price(120)), None);
+        assert_eq!(
+            events,
+            vec![BookEvent::AmendRejected {
+                order_id: OrderId(1),
+                reason: AmendRejectReason::WouldCross,
+            }]
+        );
+
+        // Book should be unchanged
+        assert_eq!(b.best_bid(), Some(Price(100)));
+        assert_eq!(b.best_ask(), Some(Price(110)));
+        b.assert_invariants();
+    }
+
+    #[test]
+    fn amend_rejects_crossing_sell_order() {
+        let mut b = OrderBook::new();
+        b.submit(lim(1, Side::Buy, 100, 5), 0);
+        b.submit(lim(2, Side::Sell, 110, 5), 1);
+        b.assert_invariants();
+
+        // Try to amend sell order to cross the bid
+        let events = b.amend(2u64, Some(Price(90)), None);
+        assert_eq!(
+            events,
+            vec![BookEvent::AmendRejected {
+                order_id: OrderId(2),
+                reason: AmendRejectReason::WouldCross,
+            }]
+        );
+
+        // Book should be unchanged
+        assert_eq!(b.best_bid(), Some(Price(100)));
+        assert_eq!(b.best_ask(), Some(Price(110)));
+        b.assert_invariants();
+    }
+
+    #[test]
+    fn amend_allows_non_crossing_price_changes() {
+        let mut b = OrderBook::new();
+        b.submit(lim(1, Side::Buy, 100, 5), 0);
+        b.submit(lim(2, Side::Sell, 110, 5), 1);
+        b.assert_invariants();
+
+        // Amend buy to 105 (still below ask of 110)
+        let events = b.amend(1u64, Some(Price(105)), None);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], BookEvent::Amended { .. }));
+        assert_eq!(b.best_bid(), Some(Price(105)));
+        b.assert_invariants();
+
+        // Amend sell to 108 (still above bid of 105)
+        let events = b.amend(2u64, Some(Price(108)), None);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], BookEvent::Amended { .. }));
+        assert_eq!(b.best_ask(), Some(Price(108)));
+        b.assert_invariants();
+    }
+
+    #[test]
+    fn amend_with_no_changes_is_noop() {
+        let mut b = OrderBook::new();
+        b.submit(lim(1, Side::Buy, 100, 10), 0);
+
+        let events = b.amend(1u64, None, None);
+        assert_eq!(events.len(), 0);
+        assert_eq!(b.len(), 1);
     }
 }
