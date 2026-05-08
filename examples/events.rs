@@ -30,10 +30,10 @@ fn main() {
     );
 
     // Cancel the partially filled rest of order 2.
-    print_events("cancel id 2", book.cancel_events(2));
+    print_events("cancel id 2", book.cancel_events(2, 2));
 
     // Cancel an unknown id is also surfaced as an event.
-    print_events("cancel id 999 (unknown)", book.cancel_events(999));
+    print_events("cancel id 999 (unknown)", book.cancel_events(999, 3));
 }
 
 fn print_events(label: &str, events: Vec<BookEvent>) {
@@ -54,6 +54,7 @@ fn print_events(label: &str, events: Vec<BookEvent>) {
             BookEvent::Canceled {
                 order_id,
                 remaining,
+                ..
             } => {
                 println!("  canceled id={order_id} remaining={remaining}")
             }
@@ -63,7 +64,17 @@ fn print_events(label: &str, events: Vec<BookEvent>) {
             BookEvent::CancelRejected { order_id, reason } => {
                 println!("  cancel_rejected id={order_id} reason={reason:?}")
             }
-            _ => println!("  (unknown event variant)"),
+            BookEvent::Amended {
+                order_id,
+                new_price,
+                new_quantity,
+            } => {
+                println!("  amended id={order_id} price={new_price:?} qty={new_quantity}")
+            }
+            BookEvent::AmendRejected { order_id, reason } => {
+                println!("  amend_rejected id={order_id} reason={reason:?}")
+            }
+            _ => println!("  (other event)"),
         }
     }
 }

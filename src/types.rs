@@ -148,6 +148,24 @@ impl SubAssign for Quantity {
     }
 }
 
+impl Quantity {
+    /// Checked addition. Returns None if overflow would occur.
+    pub const fn checked_add(self, rhs: Quantity) -> Option<Quantity> {
+        match self.0.checked_add(rhs.0) {
+            Some(v) => Some(Quantity(v)),
+            None => None,
+        }
+    }
+
+    /// Checked subtraction. Returns None if underflow would occur.
+    pub const fn checked_sub(self, rhs: Quantity) -> Option<Quantity> {
+        match self.0.checked_sub(rhs.0) {
+            Some(v) => Some(Quantity(v)),
+            None => None,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 
 #[repr(transparent)]
@@ -412,6 +430,24 @@ mod tests {
         assert_eq!(order.hidden, Quantity::ZERO);
         assert_eq!(order.total_quantity(), Quantity(5));
     }
+
+    #[test]
+    fn quantity_checked_add_detects_overflow() {
+        let max = Quantity(u64::MAX);
+        let one = Quantity(1);
+        
+        assert_eq!(max.checked_add(one), None);
+        assert_eq!(Quantity(100).checked_add(Quantity(50)), Some(Quantity(150)));
+    }
+
+    #[test]
+    fn quantity_checked_sub_detects_underflow() {
+        let zero = Quantity(0);
+        let one = Quantity(1);
+        
+        assert_eq!(zero.checked_sub(one), None);
+        assert_eq!(Quantity(100).checked_sub(Quantity(50)), Some(Quantity(50)));
+    }
 }
 
 /// A successful match between two resting/aggressive orders.
@@ -435,6 +471,21 @@ pub enum RejectReason {
     InvalidPrice,
     PostOnlyWouldCross,
     FokNotFillable,
+}
+
+/// Why an order amendment was rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum AmendRejectReason {
+    UnknownOrderId,
+    InvalidPrice,
+    InvalidQuantity,
+    /// Cannot increase quantity on an existing order (only decrease allowed)
+    QuantityIncrease,
+    /// Cannot amend market orders or other non-resting order types
+    OrderTypeNotAmendable,
+    /// New price would cross the opposite side of the book
+    WouldCross,
 }
 
 /// Why a cancel request could not be applied.
@@ -462,9 +513,11 @@ pub enum BookEvent {
     },
     /// A cancel request removed an order from the book. There is no separate
     /// cancel-accepted event; this event is the successful cancel acknowledgement.
+    #[non_exhaustive]
     Canceled {
         order_id: OrderId,
         remaining: Quantity,
+        ts: Timestamp,
     },
     /// A submit request was rejected before changing book state.
     Rejected {
@@ -475,5 +528,16 @@ pub enum BookEvent {
     CancelRejected {
         order_id: OrderId,
         reason: CancelRejectReason,
+    },
+    /// An order amendment was successfully applied.
+    Amended {
+        order_id: OrderId,
+        new_price: Option<Price>,
+        new_quantity: Quantity,
+    },
+    /// An amendment request was rejected.
+    AmendRejected {
+        order_id: OrderId,
+        reason: AmendRejectReason,
     },
 }

@@ -23,3 +23,16 @@
 data/
 test_wal_*
 *.proptest-regressions
+
+# Fuzzing artifacts
+fuzz/artifacts/
+fuzz/corpus/
+fuzz/target/
+
+# Coverage reports
+coverage/
+*.profraw
+*.profdata
+tarpaulin-report.html
+cobertura.xml
+lcov.info

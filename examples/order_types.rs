@@ -68,13 +68,24 @@ fn summarize(events: &[BookEvent]) {
             BookEvent::Canceled {
                 order_id,
                 remaining,
+                ..
             } => {
                 println!("  canceled id={order_id} remaining={remaining}")
             }
             BookEvent::CancelRejected { order_id, reason } => {
                 println!("  cancel_rejected id={order_id} reason={reason:?}")
             }
-            _ => println!("  (unknown event variant)"),
+            BookEvent::Amended {
+                order_id,
+                new_price,
+                new_quantity,
+            } => {
+                println!("  amended id={order_id} price={new_price:?} qty={new_quantity}")
+            }
+            BookEvent::AmendRejected { order_id, reason } => {
+                println!("  amend_rejected id={order_id} reason={reason:?}")
+            }
+            _ => println!("  (other event)"),
         }
     }
 }

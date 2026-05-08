@@ -229,5 +229,17 @@ means throughput scales by running multiple books, not by adding cores to one.
 ## Testing
 
 ```sh
+# Unit + integration tests
 cargo test
+
+# Benchmarks
+cargo bench
+
+# Coverage (install: cargo install cargo-llvm-cov)
+cargo llvm-cov --html
+
+# Fuzzing (install: cargo install cargo-fuzz)
+cargo +nightly fuzz run fuzz_codec
 ```
+
+40+ unit tests, 7 benchmarks, property-based tests, and fuzzing targets for codec/snapshot/book.
