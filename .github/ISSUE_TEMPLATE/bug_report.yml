@@ -1,0 +1,91 @@
+name: 🐛 Bug Report
+description: Report a reproducible bug or unexpected behavior.
+title: "[Bug]: "
+labels: ["bug", "needs triage"]
+body:
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Prerequisites
+      options:
+        - label: I have searched existing issues and this is not a duplicate.
+          required: true
+        - label: I have read the documentation and this is not a usage question.
+          required: true
+        - label: I have confirmed the bug exists on the latest version.
+          required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: A minimal code snippet or the exact steps to reproduce.
+      placeholder: |
+        1. Build a book with '...'
+        2. Submit order '...'
+        3. See incorrect trade / panic
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: Include error messages or panic backtraces if any.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: matcher Version
+      description: Crate version or git tag/commit you are running.
+      placeholder: "e.g. 0.1.0 or commit abc1234"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Usage Mode
+      options:
+        - Library (OrderBook)
+        - UDP-multicast daemon
+    validations:
+      required: true
+
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      description: Rust toolchain version and OS/architecture.
+      placeholder: "e.g. rustc 1.78.0, Ubuntu 22.04 amd64"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs
+      render: shell
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: Order sequence, book state, or anything else that helps.
