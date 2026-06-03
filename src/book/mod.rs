@@ -157,8 +157,10 @@ impl OrderBook {
         }
     }
 
+    /// Panic if any book invariant is violated. `pub` so the fuzz crate (an
+    /// external crate) can call it; only compiled for tests and fuzzing.
     #[cfg(any(test, feature = "fuzzing"))]
-    pub(super) fn assert_invariants(&self) {
+    pub fn assert_invariants(&self) {
         self.assert_invariants_at("book", 0, 0);
     }
 
