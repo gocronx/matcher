@@ -1,0 +1,5 @@
+# Project lint thresholds (see .claude/rules/rust/coding-style.md).
+# Functions stay small; params >5 means a concept is missing its type.
+# Documented "long but flat" exceptions carry #[allow] with a reason.
+too-many-lines-threshold = 50
+too-many-arguments-threshold = 5

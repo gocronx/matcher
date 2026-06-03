@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/post-edit-lint.cjs\""
+          }
+        ],
+        "description": "Format + lint edited source files (Go/Rust/Python/TS/C++/Swift)"
+      }
+    ]
+  }
+}
