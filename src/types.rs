@@ -122,29 +122,34 @@ impl fmt::Display for Quantity {
     }
 }
 
+// Quantity arithmetic is fail-fast: silent wrapping corrupted price-level
+// bookkeeping (found by fuzzing — a level total wrapped on add, then a
+// saturating remove pinned it to a garbage value forever). Overflow means the
+// caller broke the capacity contract; panicking immediately beats trading on
+// corrupted book state. Use `checked_add`/`checked_sub` to handle it softly.
 impl Add for Quantity {
     type Output = Quantity;
     fn add(self, rhs: Quantity) -> Quantity {
-        Quantity(self.0.wrapping_add(rhs.0))
+        self.checked_add(rhs).expect("quantity overflow")
     }
 }
 
 impl AddAssign for Quantity {
     fn add_assign(&mut self, rhs: Quantity) {
-        self.0 = self.0.wrapping_add(rhs.0);
+        *self = *self + rhs;
     }
 }
 
 impl Sub for Quantity {
     type Output = Quantity;
     fn sub(self, rhs: Quantity) -> Quantity {
-        Quantity(self.0.wrapping_sub(rhs.0))
+        self.checked_sub(rhs).expect("quantity underflow")
     }
 }
 
 impl SubAssign for Quantity {
     fn sub_assign(&mut self, rhs: Quantity) {
-        self.0 = self.0.wrapping_sub(rhs.0);
+        *self = *self - rhs;
     }
 }
 

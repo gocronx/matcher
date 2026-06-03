@@ -510,4 +510,17 @@ mod tests {
         assert_eq!(events.len(), 0);
         assert_eq!(b.len(), 1);
     }
+    /// Regression (found by fuzzing): wrapping Quantity addition let a price
+    /// level's total silently overflow, after which a saturating remove pinned it
+    /// to a garbage value forever. Arithmetic is now fail-fast: exceeding the
+    /// capacity contract panics instead of trading on a corrupted book.
+    #[test]
+    #[should_panic(expected = "quantity overflow")]
+    fn level_total_overflow_panics_instead_of_corrupting() {
+        let mut b = OrderBook::new();
+        let huge: u64 = u64::MAX - 100;
+        b.submit(Order::post_only(1u64, Side::Buy, 100, huge), 0);
+        // A second resting order at the same level pushes the total past u64::MAX.
+        b.submit(Order::post_only(2u64, Side::Buy, 100, huge), 0);
+    }
 }
