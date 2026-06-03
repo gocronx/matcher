@@ -240,16 +240,28 @@ pub struct Order {
     pub hidden: Quantity,
 }
 
+/// Internal parameters for constructing an [`Order`] without going through a
+/// named constructor. Aggregates the 6 fields that were previously passed
+/// positionally to `Order::new`, staying under the 5-argument clippy limit.
+struct OrderParams {
+    id: OrderId,
+    side: Side,
+    kind: OrderType,
+    price: Price,
+    quantity: Quantity,
+    hidden: Quantity,
+}
+
 impl Order {
     pub fn market(id: impl Into<OrderId>, side: Side, quantity: impl Into<Quantity>) -> Self {
-        Self::new(
-            id.into(),
+        Self::from_params(OrderParams {
+            id: id.into(),
             side,
-            OrderType::Market,
-            Price::ZERO,
-            quantity.into(),
-            Quantity::ZERO,
-        )
+            kind: OrderType::Market,
+            price: Price::ZERO,
+            quantity: quantity.into(),
+            hidden: Quantity::ZERO,
+        })
     }
 
     pub fn limit(
@@ -258,14 +270,14 @@ impl Order {
         price: impl Into<Price>,
         quantity: impl Into<Quantity>,
     ) -> Self {
-        Self::new(
-            id.into(),
+        Self::from_params(OrderParams {
+            id: id.into(),
             side,
-            OrderType::Limit,
-            price.into(),
-            quantity.into(),
-            Quantity::ZERO,
-        )
+            kind: OrderType::Limit,
+            price: price.into(),
+            quantity: quantity.into(),
+            hidden: Quantity::ZERO,
+        })
     }
 
     pub fn ioc(
@@ -274,14 +286,14 @@ impl Order {
         price: impl Into<Price>,
         quantity: impl Into<Quantity>,
     ) -> Self {
-        Self::new(
-            id.into(),
+        Self::from_params(OrderParams {
+            id: id.into(),
             side,
-            OrderType::Ioc,
-            price.into(),
-            quantity.into(),
-            Quantity::ZERO,
-        )
+            kind: OrderType::Ioc,
+            price: price.into(),
+            quantity: quantity.into(),
+            hidden: Quantity::ZERO,
+        })
     }
 
     pub fn fok(
@@ -290,14 +302,14 @@ impl Order {
         price: impl Into<Price>,
         quantity: impl Into<Quantity>,
     ) -> Self {
-        Self::new(
-            id.into(),
+        Self::from_params(OrderParams {
+            id: id.into(),
             side,
-            OrderType::Fok,
-            price.into(),
-            quantity.into(),
-            Quantity::ZERO,
-        )
+            kind: OrderType::Fok,
+            price: price.into(),
+            quantity: quantity.into(),
+            hidden: Quantity::ZERO,
+        })
     }
 
     pub fn post_only(
@@ -306,14 +318,14 @@ impl Order {
         price: impl Into<Price>,
         quantity: impl Into<Quantity>,
     ) -> Self {
-        Self::new(
-            id.into(),
+        Self::from_params(OrderParams {
+            id: id.into(),
             side,
-            OrderType::PostOnly,
-            price.into(),
-            quantity.into(),
-            Quantity::ZERO,
-        )
+            kind: OrderType::PostOnly,
+            price: price.into(),
+            quantity: quantity.into(),
+            hidden: Quantity::ZERO,
+        })
     }
 
     pub fn iceberg(
@@ -326,32 +338,25 @@ impl Order {
         let total_quantity = total_quantity.into();
         let visible = visible.into().min(total_quantity);
         let quantity = visible;
-        Self::new(
-            id.into(),
+        Self::from_params(OrderParams {
+            id: id.into(),
             side,
-            OrderType::Iceberg { visible },
-            price.into(),
+            kind: OrderType::Iceberg { visible },
+            price: price.into(),
             quantity,
-            total_quantity.saturating_sub(quantity),
-        )
+            hidden: total_quantity.saturating_sub(quantity),
+        })
     }
 
-    fn new(
-        id: OrderId,
-        side: Side,
-        kind: OrderType,
-        price: Price,
-        quantity: Quantity,
-        hidden: Quantity,
-    ) -> Self {
+    fn from_params(p: OrderParams) -> Self {
         Self {
-            id,
-            side,
-            kind,
-            price,
-            quantity,
+            id: p.id,
+            side: p.side,
+            kind: p.kind,
+            price: p.price,
+            quantity: p.quantity,
             filled: Quantity::ZERO,
-            hidden,
+            hidden: p.hidden,
         }
     }
 
@@ -435,7 +440,7 @@ mod tests {
     fn quantity_checked_add_detects_overflow() {
         let max = Quantity(u64::MAX);
         let one = Quantity(1);
-        
+
         assert_eq!(max.checked_add(one), None);
         assert_eq!(Quantity(100).checked_add(Quantity(50)), Some(Quantity(150)));
     }
@@ -444,7 +449,7 @@ mod tests {
     fn quantity_checked_sub_detects_underflow() {
         let zero = Quantity(0);
         let one = Quantity(1);
-        
+
         assert_eq!(zero.checked_sub(one), None);
         assert_eq!(Quantity(100).checked_sub(Quantity(50)), Some(Quantity(50)));
     }

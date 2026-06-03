@@ -62,6 +62,45 @@ const KIND_ICEBERG: u8 = 6;
 // Fixed bytes for a single record (before the optional iceberg_visible u64).
 const RECORD_BASE: usize = 49;
 
+/// Aggregates the per-match context passed to `fill_one_resting`.
+struct MatchContext {
+    price: Price,
+    now: Timestamp,
+    aggressor: Side,
+}
+
+/// Configuration for `OrderBook::check_side_invariants` (test/fuzzing only).
+#[cfg(any(test, feature = "fuzzing"))]
+struct SideConfig {
+    expected_side: Side,
+    /// true for asks (ascending iteration → first = best); false for bids (last = best).
+    first_is_best: bool,
+}
+
+/// Snapshot of a resting order's fields captured before it is mutated/removed.
+/// Avoids borrowing `self.orders` while also mutating the book.
+struct RestingSnap {
+    id: OrderId,
+    side: Side,
+    kind: OrderType,
+    price: Price,
+    hidden: Quantity,
+    filled: bool,
+}
+
+impl RestingSnap {
+    fn from_order(o: &Order, id: OrderId) -> Self {
+        Self {
+            id,
+            side: o.side,
+            kind: o.kind,
+            price: o.price,
+            hidden: o.hidden,
+            filled: o.is_filled(),
+        }
+    }
+}
+
 struct PriceLevel {
     orders: SmallVec<[OrderId; 8]>,
     total_qty: Quantity,
@@ -167,82 +206,74 @@ impl OrderBook {
     #[cfg(any(test, feature = "fuzzing"))]
     fn assert_invariants_at(&self, scenario: &str, seed: u64, step: usize) {
         let mut seen = std::collections::HashSet::new();
-        let mut expected_bid = None;
-        let mut expected_ask = None;
-        let context = || format!("{scenario} seed={seed} step={step}");
+        let ctx = || format!("{scenario} seed={seed} step={step}");
 
-        for (&price, level) in &self.bids {
-            assert!(
-                !level.orders.is_empty(),
-                "{}: empty bid level at {price}",
-                context()
-            );
-            expected_bid = Some(price);
-            let mut total = Quantity::ZERO;
-            for id in &level.orders {
-                assert!(
-                    seen.insert(*id),
-                    "{}: order {id} appears in multiple levels",
-                    context()
-                );
-                let order = self
-                    .orders
-                    .get(id)
-                    .unwrap_or_else(|| panic!("{}: bid level references missing order", context()));
-                assert_eq!(order.side, Side::Buy, "{}", context());
-                assert_eq!(order.price, price, "{}", context());
-                total += Self::order_level_qty(order);
-            }
-            assert_eq!(
-                level.total_qty,
-                total,
-                "{}: bad bid total at {price}",
-                context()
-            );
-        }
+        let expected_bid = self.check_side_invariants(
+            self.bids.iter(),
+            SideConfig {
+                expected_side: Side::Buy,
+                first_is_best: false,
+            },
+            &mut seen,
+            &ctx,
+        );
+        let expected_ask = self.check_side_invariants(
+            self.asks.iter(),
+            SideConfig {
+                expected_side: Side::Sell,
+                first_is_best: true,
+            },
+            &mut seen,
+            &ctx,
+        );
 
-        for (&price, level) in &self.asks {
-            assert!(
-                !level.orders.is_empty(),
-                "{}: empty ask level at {price}",
-                context()
-            );
-            if expected_ask.is_none() {
-                expected_ask = Some(price);
-            }
-            let mut total = Quantity::ZERO;
-            for id in &level.orders {
-                assert!(
-                    seen.insert(*id),
-                    "{}: order {id} appears in multiple levels",
-                    context()
-                );
-                let order = self
-                    .orders
-                    .get(id)
-                    .unwrap_or_else(|| panic!("{}: ask level references missing order", context()));
-                assert_eq!(order.side, Side::Sell, "{}", context());
-                assert_eq!(order.price, price, "{}", context());
-                total += Self::order_level_qty(order);
-            }
-            assert_eq!(
-                level.total_qty,
-                total,
-                "{}: bad ask total at {price}",
-                context()
-            );
-        }
-
-        assert_eq!(self.best_bid, expected_bid, "{}", context());
-        assert_eq!(self.best_ask, expected_ask, "{}", context());
-        assert_eq!(self.orders.len(), seen.len(), "{}", context());
+        assert_eq!(self.best_bid, expected_bid, "{}", ctx());
+        assert_eq!(self.best_ask, expected_ask, "{}", ctx());
+        assert_eq!(self.orders.len(), seen.len(), "{}", ctx());
         if let (Some(bid), Some(ask)) = (self.best_bid, self.best_ask) {
-            assert!(
-                bid < ask,
-                "{}: crossed book: bid={bid} ask={ask}",
-                context()
-            );
+            assert!(bid < ask, "{}: crossed book: bid={bid} ask={ask}", ctx());
         }
+    }
+
+    /// Validate every price level on one side; return the expected best price.
+    #[cfg(any(test, feature = "fuzzing"))]
+    fn check_side_invariants<'a>(
+        &self,
+        levels: impl Iterator<Item = (&'a Price, &'a PriceLevel)>,
+        cfg: SideConfig,
+        seen: &mut std::collections::HashSet<OrderId>,
+        ctx: &impl Fn() -> String,
+    ) -> Option<Price> {
+        let mut best: Option<Price> = None;
+        for (&price, level) in levels {
+            assert!(
+                !level.orders.is_empty(),
+                "{}: empty level at {price}",
+                ctx()
+            );
+            if cfg.first_is_best && best.is_none() {
+                best = Some(price);
+            } else if !cfg.first_is_best {
+                best = Some(price); // last wins for bids
+            }
+            let mut total = Quantity::ZERO;
+            for id in &level.orders {
+                assert!(
+                    seen.insert(*id),
+                    "{}: order {id} appears in multiple levels",
+                    ctx()
+                );
+                let order = self
+                    .orders
+                    .get(id)
+                    .unwrap_or_else(|| panic!("{}: level references missing order", ctx()));
+                assert_eq!(order.side, cfg.expected_side, "{}", ctx());
+                assert_eq!(order.price, price, "{}", ctx());
+                total += Self::order_level_qty(order);
+            }
+            assert_eq!(level.total_qty, total, "{}: bad total at {price}", ctx());
+        }
+        best
     }
 
     fn iceberg_visible(kind: OrderType) -> Option<Quantity> {
@@ -380,118 +411,124 @@ impl OrderBook {
     ) -> Vec<BookEvent> {
         let id = id.into();
 
-        // No-op if nothing to change
         if new_price.is_none() && new_quantity.is_none() {
             return vec![];
         }
 
-        // Validate order exists
+        if let Some(reject) = self.validate_amend(id, new_price, new_quantity) {
+            return vec![reject];
+        }
+
+        if new_price.is_some() {
+            self.apply_amend_price_change(id, new_price, new_quantity)
+        } else {
+            self.apply_amend_qty_only(id, new_quantity.unwrap())
+        }
+    }
+
+    /// Validate an amend request; returns a rejection event if invalid.
+    fn validate_amend(
+        &self,
+        id: OrderId,
+        new_price: Option<Price>,
+        new_quantity: Option<Quantity>,
+    ) -> Option<BookEvent> {
         let Some(order) = self.orders.get(&id) else {
-            return vec![BookEvent::AmendRejected {
+            return Some(BookEvent::AmendRejected {
                 order_id: id,
                 reason: AmendRejectReason::UnknownOrderId,
-            }];
+            });
         };
 
-        // Validate order type is amendable
         if !matches!(
             order.kind,
             OrderType::Limit | OrderType::PostOnly | OrderType::Iceberg { .. }
         ) {
-            return vec![BookEvent::AmendRejected {
+            return Some(BookEvent::AmendRejected {
                 order_id: id,
                 reason: AmendRejectReason::OrderTypeNotAmendable,
-            }];
+            });
         }
 
-        // Validate new price if provided
         if let Some(price) = new_price {
             if price == Price::ZERO {
-                return vec![BookEvent::AmendRejected {
+                return Some(BookEvent::AmendRejected {
                     order_id: id,
                     reason: AmendRejectReason::InvalidPrice,
-                }];
+                });
             }
-
-            // Check if new price would cross the book
             let would_cross = match order.side {
                 Side::Buy => self.best_ask.is_some_and(|a| price >= a),
                 Side::Sell => self.best_bid.is_some_and(|b| price <= b),
             };
-
             if would_cross {
-                return vec![BookEvent::AmendRejected {
+                return Some(BookEvent::AmendRejected {
                     order_id: id,
                     reason: AmendRejectReason::WouldCross,
-                }];
+                });
             }
         }
 
-        // Validate new quantity if provided
         if let Some(qty) = new_quantity {
             if qty == Quantity::ZERO {
-                return vec![BookEvent::AmendRejected {
+                return Some(BookEvent::AmendRejected {
                     order_id: id,
                     reason: AmendRejectReason::InvalidQuantity,
-                }];
+                });
             }
-
-            let current_remaining = Self::user_remaining(order);
-            if qty > current_remaining {
-                return vec![BookEvent::AmendRejected {
+            if qty > Self::user_remaining(order) {
+                return Some(BookEvent::AmendRejected {
                     order_id: id,
                     reason: AmendRejectReason::QuantityIncrease,
-                }];
+                });
             }
         }
 
-        let price_changed = new_price.is_some();
+        None
+    }
 
-        // If price changed, we must remove and re-insert (loses time priority)
-        if price_changed {
-            let mut order = self.remove_resting_order(id).unwrap();
-            order.price = new_price.unwrap();
-
-            if let Some(new_qty) = new_quantity {
-                Self::reduce_order_quantity(&mut order, new_qty);
-            }
-
-            let final_qty = Self::user_remaining(&order);
-            self.rest(order);
-
-            vec![BookEvent::Amended {
-                order_id: id,
-                new_price,
-                new_quantity: final_qty,
-            }]
-        } else if let Some(new_qty) = new_quantity {
-            // Quantity-only change: modify in place to maintain time priority
-            let order = self.orders.get_mut(&id).unwrap();
-            let old_visible_qty = Self::order_level_qty(order);
-            
-            Self::reduce_order_quantity(order, new_qty);
-
-            let new_visible_qty = Self::order_level_qty(order);
-            let visible_delta = old_visible_qty.saturating_sub(new_visible_qty);
-
-            // Update the price level's total quantity
-            let (side, price) = (order.side, order.price);
-            let levels = match side {
-                Side::Buy => &mut self.bids,
-                Side::Sell => &mut self.asks,
-            };
-            if let Some(lvl) = levels.get_mut(&price) {
-                lvl.total_qty = lvl.total_qty.saturating_sub(visible_delta);
-            }
-
-            vec![BookEvent::Amended {
-                order_id: id,
-                new_price: None,
-                new_quantity: new_qty,
-            }]
-        } else {
-            unreachable!("checked at start of function")
+    /// Apply an amend where the price changes: remove, update, re-insert (loses time priority).
+    fn apply_amend_price_change(
+        &mut self,
+        id: OrderId,
+        new_price: Option<Price>,
+        new_quantity: Option<Quantity>,
+    ) -> Vec<BookEvent> {
+        let mut order = self.remove_resting_order(id).unwrap();
+        order.price = new_price.unwrap();
+        if let Some(new_qty) = new_quantity {
+            Self::reduce_order_quantity(&mut order, new_qty);
         }
+        let final_qty = Self::user_remaining(&order);
+        self.rest(order);
+        vec![BookEvent::Amended {
+            order_id: id,
+            new_price,
+            new_quantity: final_qty,
+        }]
+    }
+
+    /// Apply a quantity-only amend: modify in place to maintain time priority.
+    fn apply_amend_qty_only(&mut self, id: OrderId, new_qty: Quantity) -> Vec<BookEvent> {
+        let order = self.orders.get_mut(&id).unwrap();
+        let old_visible_qty = Self::order_level_qty(order);
+        Self::reduce_order_quantity(order, new_qty);
+        let visible_delta = old_visible_qty.saturating_sub(Self::order_level_qty(order));
+
+        let (side, price) = (order.side, order.price);
+        let levels = match side {
+            Side::Buy => &mut self.bids,
+            Side::Sell => &mut self.asks,
+        };
+        if let Some(lvl) = levels.get_mut(&price) {
+            lvl.total_qty = lvl.total_qty.saturating_sub(visible_delta);
+        }
+
+        vec![BookEvent::Amended {
+            order_id: id,
+            new_price: None,
+            new_quantity: new_qty,
+        }]
     }
 
     /// Helper to reduce order quantity (for iceberg orders, reduces hidden first)
@@ -582,85 +619,121 @@ impl OrderBook {
                 if incoming.remaining() == Quantity::ZERO {
                     break;
                 }
-                let Some(rest) = self.orders.get_mut(&rest_id) else {
-                    continue;
-                };
-                let fill = incoming.remaining().min(rest.remaining());
-                if fill == Quantity::ZERO {
-                    continue;
-                }
-                rest.filled += fill;
-                let (rfilled, rkind, rhidden, rside, rprice) = (
-                    rest.is_filled(),
-                    rest.kind,
-                    rest.hidden,
-                    rest.side,
-                    rest.price,
+                self.fill_one_resting(
+                    incoming,
+                    rest_id,
+                    MatchContext {
+                        price,
+                        now,
+                        aggressor,
+                    },
+                    events,
                 );
-                incoming.filled += fill;
+            }
+        }
+    }
 
-                let (buy_id, sell_id) = if aggressor == Side::Buy {
-                    (incoming.id, rest_id)
-                } else {
-                    (rest_id, incoming.id)
-                };
-                events.push(BookEvent::Trade(Trade {
-                    buy_id,
-                    sell_id,
-                    price,
-                    quantity: fill,
-                    ts: now,
-                    aggressor,
-                }));
+    /// Fill a single resting order against the incoming aggressor, then handle
+    /// level-quantity bookkeeping and iceberg replenishment.
+    fn fill_one_resting(
+        &mut self,
+        incoming: &mut Order,
+        rest_id: OrderId,
+        ctx: MatchContext,
+        events: &mut Vec<BookEvent>,
+    ) {
+        let Some(rest) = self.orders.get_mut(&rest_id) else {
+            return;
+        };
+        let fill = incoming.remaining().min(rest.remaining());
+        if fill == Quantity::ZERO {
+            return;
+        }
+        rest.filled += fill;
+        let snap = RestingSnap::from_order(rest, rest_id);
+        incoming.filled += fill;
 
-                if rfilled {
-                    let levels = match rside {
-                        Side::Buy => &mut self.bids,
-                        Side::Sell => &mut self.asks,
-                    };
-                    if let Some(lvl) = levels.get_mut(&rprice) {
-                        lvl.remove(rest_id, fill);
-                        if lvl.orders.is_empty() {
-                            self.drop_level(rside, rprice);
-                        }
-                    }
-                    self.orders.remove(&rest_id);
-                    if let Some(vis_sz) = Self::iceberg_visible(rkind) {
-                        if rhidden > Quantity::ZERO {
-                            let refill = rhidden.min(vis_sz);
-                            self.rest(Order {
-                                id: rest_id,
-                                side: rside,
-                                kind: rkind,
-                                price: rprice,
-                                quantity: refill,
-                                filled: Quantity::ZERO,
-                                hidden: rhidden - refill,
-                            });
-                            if let Some(rested) = self.orders.get(&rest_id) {
-                                events.push(BookEvent::Rested {
-                                    order_id: rest_id,
-                                    remaining: Self::user_remaining(rested),
-                                });
-                            }
-                        }
-                    }
-                } else {
-                    let levels = match rside {
-                        Side::Buy => &mut self.bids,
-                        Side::Sell => &mut self.asks,
-                    };
-                    if let Some(lvl) = levels.get_mut(&rprice) {
-                        lvl.total_qty = lvl.total_qty.saturating_sub(fill);
-                    }
-                    if let Some(rest) = self.orders.get(&rest_id) {
-                        events.push(BookEvent::Rested {
-                            order_id: rest_id,
-                            remaining: Self::user_remaining(rest),
-                        });
-                    }
+        let (buy_id, sell_id) = if ctx.aggressor == Side::Buy {
+            (incoming.id, rest_id)
+        } else {
+            (rest_id, incoming.id)
+        };
+        events.push(BookEvent::Trade(Trade {
+            buy_id,
+            sell_id,
+            price: ctx.price,
+            quantity: fill,
+            ts: ctx.now,
+            aggressor: ctx.aggressor,
+        }));
+
+        if snap.filled {
+            self.remove_filled_resting(&snap, fill, events);
+        } else {
+            self.update_partial_resting(&snap, fill, events);
+        }
+    }
+
+    /// Remove a fully-filled resting order from the level index and handle
+    /// iceberg replenishment.
+    fn remove_filled_resting(
+        &mut self,
+        snap: &RestingSnap,
+        fill: Quantity,
+        events: &mut Vec<BookEvent>,
+    ) {
+        let levels = match snap.side {
+            Side::Buy => &mut self.bids,
+            Side::Sell => &mut self.asks,
+        };
+        if let Some(lvl) = levels.get_mut(&snap.price) {
+            lvl.remove(snap.id, fill);
+            if lvl.orders.is_empty() {
+                self.drop_level(snap.side, snap.price);
+            }
+        }
+        self.orders.remove(&snap.id);
+        if let Some(vis_sz) = Self::iceberg_visible(snap.kind) {
+            if snap.hidden > Quantity::ZERO {
+                let refill = snap.hidden.min(vis_sz);
+                self.rest(Order {
+                    id: snap.id,
+                    side: snap.side,
+                    kind: snap.kind,
+                    price: snap.price,
+                    quantity: refill,
+                    filled: Quantity::ZERO,
+                    hidden: snap.hidden - refill,
+                });
+                if let Some(rested) = self.orders.get(&snap.id) {
+                    events.push(BookEvent::Rested {
+                        order_id: snap.id,
+                        remaining: Self::user_remaining(rested),
+                    });
                 }
             }
+        }
+    }
+
+    /// Update level quantity for a partially-filled resting order and emit Rested.
+    fn update_partial_resting(
+        &mut self,
+        snap: &RestingSnap,
+        fill: Quantity,
+        events: &mut Vec<BookEvent>,
+    ) {
+        let levels = match snap.side {
+            Side::Buy => &mut self.bids,
+            Side::Sell => &mut self.asks,
+        };
+        if let Some(lvl) = levels.get_mut(&snap.price) {
+            lvl.total_qty = lvl.total_qty.saturating_sub(fill);
+        }
+        if let Some(rest) = self.orders.get(&snap.id) {
+            events.push(BookEvent::Rested {
+                order_id: snap.id,
+                remaining: Self::user_remaining(rest),
+            });
         }
     }
 
@@ -686,25 +759,7 @@ impl OrderBook {
         }
 
         if matches!(order.kind, OrderType::PostOnly) {
-            let crosses = match order.side {
-                Side::Buy => self.best_ask.is_some_and(|a| order.price >= a),
-                Side::Sell => self.best_bid.is_some_and(|b| order.price <= b),
-            };
-            if crosses {
-                return vec![BookEvent::Rejected {
-                    order_id: order.id,
-                    reason: RejectReason::PostOnlyWouldCross,
-                }];
-            }
-            events.push(BookEvent::Accepted { order_id: order.id });
-            let remaining = Self::user_remaining(&order);
-            let order_id = order.id;
-            self.rest(order);
-            events.push(BookEvent::Rested {
-                order_id,
-                remaining,
-            });
-            return events;
+            return self.handle_post_only(order, &mut events);
         }
 
         if matches!(order.kind, OrderType::Fok) && !self.can_fill(&order) {
@@ -716,35 +771,63 @@ impl OrderBook {
 
         events.push(BookEvent::Accepted { order_id: order.id });
         self.match_side(&mut order, now, &mut events);
-
-        if order.remaining() > Quantity::ZERO {
-            match order.kind {
-                OrderType::Limit => {
-                    let order_id = order.id;
-                    let remaining = Self::user_remaining(&order);
-                    self.rest(order);
-                    events.push(BookEvent::Rested {
-                        order_id,
-                        remaining,
-                    });
-                }
-                OrderType::Iceberg { visible } => {
-                    let total = order.remaining() + order.hidden;
-                    let v = visible.min(total);
-                    order.quantity = v;
-                    order.filled = Quantity::ZERO;
-                    order.hidden = total - v;
-                    let order_id = order.id;
-                    self.rest(order);
-                    events.push(BookEvent::Rested {
-                        order_id,
-                        remaining: total,
-                    });
-                }
-                _ => {}
-            }
-        }
+        self.rest_unfilled_remainder(order, &mut events);
         events
+    }
+
+    /// Handle a post-only order: reject if it would cross, otherwise accept and rest.
+    fn handle_post_only(&mut self, order: Order, events: &mut Vec<BookEvent>) -> Vec<BookEvent> {
+        let crosses = match order.side {
+            Side::Buy => self.best_ask.is_some_and(|a| order.price >= a),
+            Side::Sell => self.best_bid.is_some_and(|b| order.price <= b),
+        };
+        if crosses {
+            return vec![BookEvent::Rejected {
+                order_id: order.id,
+                reason: RejectReason::PostOnlyWouldCross,
+            }];
+        }
+        events.push(BookEvent::Accepted { order_id: order.id });
+        let remaining = Self::user_remaining(&order);
+        let order_id = order.id;
+        self.rest(order);
+        events.push(BookEvent::Rested {
+            order_id,
+            remaining,
+        });
+        std::mem::take(events)
+    }
+
+    /// Rest any unfilled quantity after matching (Limit and Iceberg only).
+    fn rest_unfilled_remainder(&mut self, mut order: Order, events: &mut Vec<BookEvent>) {
+        if order.remaining() == Quantity::ZERO {
+            return;
+        }
+        match order.kind {
+            OrderType::Limit => {
+                let order_id = order.id;
+                let remaining = Self::user_remaining(&order);
+                self.rest(order);
+                events.push(BookEvent::Rested {
+                    order_id,
+                    remaining,
+                });
+            }
+            OrderType::Iceberg { visible } => {
+                let total = order.remaining() + order.hidden;
+                let v = visible.min(total);
+                order.quantity = v;
+                order.filled = Quantity::ZERO;
+                order.hidden = total - v;
+                let order_id = order.id;
+                self.rest(order);
+                events.push(BookEvent::Rested {
+                    order_id,
+                    remaining: total,
+                });
+            }
+            _ => {}
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -828,6 +911,20 @@ impl OrderBook {
     ///
     /// Returns `Err` if the magic/version mismatches or the bytes are malformed.
     pub fn load(bytes: &[u8]) -> Result<Self, SnapshotError> {
+        let n_orders = Self::parse_snapshot_header(bytes)?;
+        let mut book = OrderBook::new();
+        let mut pos = HEADER_LEN;
+        for _ in 0..n_orders {
+            let (order, consumed) = Self::parse_order_record(&bytes[pos..], bytes.len() - pos)?;
+            pos += consumed;
+            // Bypass submit_events (which would match!) — directly rest the order.
+            book.rest(order);
+        }
+        Ok(book)
+    }
+
+    /// Validate and parse the fixed 20-byte snapshot header; returns the order count.
+    fn parse_snapshot_header(bytes: &[u8]) -> Result<usize, SnapshotError> {
         // Magic check: compare however many bytes we have against the magic
         // prefix. If they differ we know it's wrong magic (not just truncation).
         // Only report Truncated when the bytes so far do match the prefix.
@@ -835,12 +932,9 @@ impl OrderBook {
         if bytes[..magic_cmp_len] != SNAP_MAGIC[..magic_cmp_len] {
             return Err(SnapshotError::BadMagic);
         }
-        // Payload has the right prefix so far; require the full header.
         if bytes.len() < HEADER_LEN {
             return Err(SnapshotError::Truncated);
         }
-
-        // Version check.
         let version = u32::from_be_bytes(
             bytes[HDR_MAGIC_END..HDR_VERSION_END]
                 .try_into()
@@ -849,106 +943,104 @@ impl OrderBook {
         if version != SNAP_VERSION {
             return Err(SnapshotError::UnsupportedVersion(version));
         }
-
-        // Number of orders.
         let n_orders = u64::from_be_bytes(
             bytes[HDR_VERSION_END..HDR_NORDERS_END]
                 .try_into()
                 .map_err(|_| SnapshotError::Truncated)?,
         ) as usize;
+        Ok(n_orders)
+    }
 
-        let mut book = OrderBook::new();
-        let mut pos = HEADER_LEN;
-
-        for _ in 0..n_orders {
-            // Each record is at least RECORD_BASE (49) bytes.
-            if pos + RECORD_BASE > bytes.len() {
-                return Err(SnapshotError::Truncated);
-            }
-
-            let side_byte = bytes[pos];
-            let kind_tag = bytes[pos + 1];
-            // [2..8] reserved — skip
-            let id = u64::from_be_bytes(
-                bytes[pos + 8..pos + 16]
-                    .try_into()
-                    .map_err(|_| SnapshotError::Truncated)?,
-            );
-            let price = u64::from_be_bytes(
-                bytes[pos + 16..pos + 24]
-                    .try_into()
-                    .map_err(|_| SnapshotError::Truncated)?,
-            );
-            let quantity = u64::from_be_bytes(
-                bytes[pos + 24..pos + 32]
-                    .try_into()
-                    .map_err(|_| SnapshotError::Truncated)?,
-            );
-            let filled = u64::from_be_bytes(
-                bytes[pos + 32..pos + 40]
-                    .try_into()
-                    .map_err(|_| SnapshotError::Truncated)?,
-            );
-            let hidden = u64::from_be_bytes(
-                bytes[pos + 40..pos + 48]
-                    .try_into()
-                    .map_err(|_| SnapshotError::Truncated)?,
-            );
-            let iceberg_visible_set = bytes[pos + 48];
-
-            pos += RECORD_BASE;
-
-            // Decode side.
-            let side = match side_byte {
-                SIDE_BUY => Side::Buy,
-                SIDE_SELL => Side::Sell,
-                other => return Err(SnapshotError::InvalidSide(other)),
-            };
-
-            // Decode kind and (conditionally) iceberg_visible.
-            let kind = match kind_tag {
-                KIND_LIMIT => OrderType::Limit,
-                KIND_POST_ONLY => OrderType::PostOnly,
-                KIND_ICEBERG => {
-                    if iceberg_visible_set != 0 {
-                        if pos + 8 > bytes.len() {
-                            return Err(SnapshotError::Truncated);
-                        }
-                        let vis = u64::from_be_bytes(
-                            bytes[pos..pos + 8]
-                                .try_into()
-                                .map_err(|_| SnapshotError::Truncated)?,
-                        );
-                        pos += 8;
-                        OrderType::Iceberg {
-                            visible: Quantity(vis),
-                        }
-                    } else {
-                        // iceberg_visible_set == 0 means visible not stored;
-                        // fall back to quantity as the visible slice.
-                        OrderType::Iceberg {
-                            visible: Quantity(quantity),
-                        }
-                    }
-                }
-                other => return Err(SnapshotError::InvalidKind(other)),
-            };
-
-            let order = Order {
-                id: OrderId(id),
-                side,
-                kind,
-                price: Price(price),
-                quantity: Quantity(quantity),
-                filled: Quantity(filled),
-                hidden: Quantity(hidden),
-            };
-
-            // Bypass submit_events (which would match!) — directly rest the order.
-            book.rest(order);
+    /// Parse one order record from `record_bytes` (a slice starting at the record).
+    /// `remaining_len` is the number of bytes left in the full buffer (for bounds checks).
+    /// Returns `(Order, bytes_consumed)`.
+    ///
+    /// Long but flat: 9 fixed-offset field reads followed by two enum decodings.
+    /// Extracting sub-functions would require passing partially-parsed state across
+    /// call boundaries, making the wire-format contract harder to verify by reading.
+    #[allow(clippy::too_many_lines)]
+    fn parse_order_record(
+        record_bytes: &[u8],
+        remaining_len: usize,
+    ) -> Result<(Order, usize), SnapshotError> {
+        if remaining_len < RECORD_BASE {
+            return Err(SnapshotError::Truncated);
         }
 
-        Ok(book)
+        let side_byte = record_bytes[0];
+        let kind_tag = record_bytes[1];
+        // [2..8] reserved — skip
+        let id = u64::from_be_bytes(
+            record_bytes[8..16]
+                .try_into()
+                .map_err(|_| SnapshotError::Truncated)?,
+        );
+        let price = u64::from_be_bytes(
+            record_bytes[16..24]
+                .try_into()
+                .map_err(|_| SnapshotError::Truncated)?,
+        );
+        let quantity = u64::from_be_bytes(
+            record_bytes[24..32]
+                .try_into()
+                .map_err(|_| SnapshotError::Truncated)?,
+        );
+        let filled = u64::from_be_bytes(
+            record_bytes[32..40]
+                .try_into()
+                .map_err(|_| SnapshotError::Truncated)?,
+        );
+        let hidden = u64::from_be_bytes(
+            record_bytes[40..48]
+                .try_into()
+                .map_err(|_| SnapshotError::Truncated)?,
+        );
+        let iceberg_visible_set = record_bytes[48];
+        let mut consumed = RECORD_BASE;
+
+        let side = match side_byte {
+            SIDE_BUY => Side::Buy,
+            SIDE_SELL => Side::Sell,
+            other => return Err(SnapshotError::InvalidSide(other)),
+        };
+
+        let kind = match kind_tag {
+            KIND_LIMIT => OrderType::Limit,
+            KIND_POST_ONLY => OrderType::PostOnly,
+            KIND_ICEBERG => {
+                if iceberg_visible_set != 0 {
+                    if remaining_len < RECORD_BASE + 8 {
+                        return Err(SnapshotError::Truncated);
+                    }
+                    let vis = u64::from_be_bytes(
+                        record_bytes[RECORD_BASE..RECORD_BASE + 8]
+                            .try_into()
+                            .map_err(|_| SnapshotError::Truncated)?,
+                    );
+                    consumed += 8;
+                    OrderType::Iceberg {
+                        visible: Quantity(vis),
+                    }
+                } else {
+                    // iceberg_visible_set == 0: fall back to quantity as the visible slice.
+                    OrderType::Iceberg {
+                        visible: Quantity(quantity),
+                    }
+                }
+            }
+            other => return Err(SnapshotError::InvalidKind(other)),
+        };
+
+        let order = Order {
+            id: OrderId(id),
+            side,
+            kind,
+            price: Price(price),
+            quantity: Quantity(quantity),
+            filled: Quantity(filled),
+            hidden: Quantity(hidden),
+        };
+        Ok((order, consumed))
     }
 }
 

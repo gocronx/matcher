@@ -18,6 +18,10 @@
 //! assert_eq!(trades[0].quantity.get(), 3);
 //! ```
 
+// Enforce the "functions stay small" rule (thresholds in clippy.toml). CI runs
+// clippy with -D warnings, so this blocks oversized functions before merge.
+#![warn(clippy::too_many_lines)]
+
 pub mod book;
 pub mod codec;
 pub mod matcher;

@@ -54,7 +54,10 @@ fn main() {
     println!("8. Amend iceberg: reduce total from 30 to 15");
     let events = book.amend(6u64, None, Some(Quantity(15)));
     print_events(&events);
-    println!("   Visible at 102: {} (unchanged)", book.level_qty(Side::Sell, 102));
+    println!(
+        "   Visible at 102: {} (unchanged)",
+        book.level_qty(Side::Sell, 102)
+    );
     println!("   Hidden reduced from 20 to 5\n");
 
     // Rejection examples
@@ -80,13 +83,19 @@ fn print_events(events: &[BookEvent]) {
                 new_quantity,
             } => {
                 if let Some(price) = new_price {
-                    println!("   ✓ Amended order {}: new price={}, qty={}", order_id, price, new_quantity);
+                    println!(
+                        "   ✓ Amended order {}: new price={}, qty={}",
+                        order_id, price, new_quantity
+                    );
                 } else {
                     println!("   ✓ Amended order {}: qty={}", order_id, new_quantity);
                 }
             }
             BookEvent::AmendRejected { order_id, reason } => {
-                println!("   ✗ Amendment rejected for order {}: {:?}", order_id, reason);
+                println!(
+                    "   ✗ Amendment rejected for order {}: {:?}",
+                    order_id, reason
+                );
             }
             _ => {}
         }

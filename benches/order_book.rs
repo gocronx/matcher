@@ -124,11 +124,9 @@ fn submit_into_deep_book(c: &mut Criterion) {
             }
 
             let mut total = Duration::ZERO;
-            let mut next_id = DEPTH + 1;
-            for _ in 0..iters {
+            for next_id in (DEPTH + 1)..(DEPTH + 1 + iters) {
                 // Buy below any ask -> rests immediately, no match.
                 let order = Order::limit(next_id, Side::Buy, 50_000, 1);
-                next_id += 1;
 
                 let start = Instant::now();
                 black_box(book.submit(black_box(order), 0));
