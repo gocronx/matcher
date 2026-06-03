@@ -1,7 +1,6 @@
 use crate::types::{
     BookEvent, Order, OrderId, OrderType, Quantity, RejectReason, Side, Timestamp, Trade,
 };
-use smallvec::SmallVec;
 
 use super::{MatchContext, OrderBook, RestingSnap};
 
@@ -18,20 +17,19 @@ impl OrderBook {
     ) {
         let aggressor = incoming.side;
         for price in self.price_list(incoming) {
-            if incoming.remaining() == Quantity::ZERO {
-                break;
-            }
-            let ids: SmallVec<[OrderId; 8]> = match aggressor {
-                Side::Buy => self.asks.get(&price).map(|l| l.orders.clone()),
-                Side::Sell => self.bids.get(&price).map(|l| l.orders.clone()),
-            }
-            .unwrap_or_default();
-
-            for rest_id in ids {
-                if incoming.remaining() == Quantity::ZERO {
-                    break;
-                }
-                self.fill_one_resting(
+            // Front-of-queue driven: re-read the level head on every fill so
+            // quantity replenished by an iceberg refill (same id, re-queued at
+            // the back) is matched too. A pre-collected id snapshot would skip
+            // it and let the aggressor's remainder rest on a crossed book.
+            while incoming.remaining() > Quantity::ZERO {
+                let head = match aggressor {
+                    Side::Buy => self.asks.get(&price).and_then(|l| l.orders.first()),
+                    Side::Sell => self.bids.get(&price).and_then(|l| l.orders.first()),
+                };
+                let Some(&rest_id) = head else {
+                    break; // level exhausted, move to the next price
+                };
+                let fill = self.fill_one_resting(
                     incoming,
                     rest_id,
                     MatchContext {
@@ -41,25 +39,32 @@ impl OrderBook {
                     },
                     events,
                 );
+                if fill == Quantity::ZERO {
+                    break; // defensive: head could not trade — avoid spinning
+                }
+            }
+            if incoming.remaining() == Quantity::ZERO {
+                break;
             }
         }
     }
 
     /// Fill a single resting order against the incoming aggressor, then handle
-    /// level-quantity bookkeeping and iceberg replenishment.
+    /// level-quantity bookkeeping and iceberg replenishment. Returns the filled
+    /// quantity so the caller can detect a head that cannot trade.
     fn fill_one_resting(
         &mut self,
         incoming: &mut Order,
         rest_id: OrderId,
         ctx: MatchContext,
         events: &mut Vec<BookEvent>,
-    ) {
+    ) -> Quantity {
         let Some(rest) = self.orders.get_mut(&rest_id) else {
-            return;
+            return Quantity::ZERO;
         };
         let fill = incoming.remaining().min(rest.remaining());
         if fill == Quantity::ZERO {
-            return;
+            return Quantity::ZERO;
         }
         rest.filled += fill;
         let snap = RestingSnap::from_order(rest, rest_id);
@@ -84,6 +89,7 @@ impl OrderBook {
         } else {
             self.update_partial_resting(&snap, fill, events);
         }
+        fill
     }
 
     /// Remove a fully-filled resting order from the level index and handle
@@ -327,6 +333,28 @@ mod tests {
         let t = b.submit(Order::post_only(2, Side::Buy, 100, 5), 1);
         assert_eq!(t.len(), 0);
         assert_eq!(b.len(), 1);
+    }
+
+    /// Regression (found by fuzzing): an aggressor bigger than an iceberg's
+    /// total must eat through every refill and clear the level, NOT skip the
+    /// replenished quantity and rest its remainder on a crossed book.
+    #[test]
+    fn aggressor_consumes_iceberg_refills_without_crossing() {
+        let mut b = OrderBook::new();
+        b.submit(Order::iceberg(1, Side::Buy, 100, 100, 51), 0);
+        // Sell 1000 @ 50: crosses the bid, exceeds the iceberg's total (100).
+        let events = b.submit_events(lim(2, Side::Sell, 50, 1000), 1);
+        let traded: u64 = events
+            .iter()
+            .filter_map(|e| match e {
+                BookEvent::Trade(t) => Some(t.quantity.0),
+                _ => None,
+            })
+            .sum();
+        assert_eq!(traded, 100, "must fill the iceberg's full quantity");
+        assert_eq!(b.best_bid(), None, "bid side must be cleared");
+        assert_eq!(b.best_ask(), Some(Price(50)), "remainder rests as ask");
+        b.assert_invariants(); // would panic on a crossed book
     }
 
     #[test]
